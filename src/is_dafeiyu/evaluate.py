@@ -111,27 +111,34 @@ def find_high_precision_threshold(
     return best_thr
 
 
+def summarize_groups(labels: np.ndarray, preds: np.ndarray, groups: list[str]) -> dict[str, dict]:
+    by_group: dict[str, dict] = {}
+    indices: dict[str, list[int]] = collections.defaultdict(list)
+    for i, group in enumerate(groups):
+        indices[group].append(i)
+
+    for group, idxs in sorted(indices.items()):
+        negative = labels[idxs] == 0
+        group_preds = preds[idxs]
+        n_neg = int(negative.sum())
+        n_pos = len(idxs) - n_neg
+        stats = {"count": len(idxs)}
+        if n_neg:
+            fp = int(group_preds[negative].sum())
+            stats.update(false_positives=fp, fpr=fp / n_neg)
+        if n_pos:
+            fn = n_pos - int(group_preds[~negative].sum())
+            stats.update(false_negatives=fn, recall=1.0 - fn / n_pos)
+        by_group[group] = stats
+    return by_group
+
+
 def compute_detailed_metrics(data: dict, temp: float, threshold: float) -> dict:
     probs = 1.0 / (1.0 + np.exp(-(data["logits"] / temp)))
     labels = data["labels"]
     preds = (probs >= threshold).astype(int)
 
     tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
-
-    by_cat: dict[str, dict] = {}
-    cat_indices: dict[str, list[int]] = collections.defaultdict(list)
-    for i, c in enumerate(data["categories"]):
-        cat_indices[c].append(i)
-
-    for cat, idxs in sorted(cat_indices.items()):
-        c_labels = labels[idxs]
-        c_preds = preds[idxs]
-        if (c_labels == 0).all():
-            c_fp = int((c_preds == 1).sum())
-            by_cat[cat] = {"count": len(idxs), "false_positives": c_fp, "fpr": float(c_fp / len(idxs))}
-        else:
-            c_fn = int((c_preds == 0).sum())
-            by_cat[cat] = {"count": len(idxs), "false_negatives": c_fn, "recall": float(1.0 - c_fn / len(idxs))}
 
     false_positives = []
     false_negatives = []
@@ -168,7 +175,8 @@ def compute_detailed_metrics(data: dict, temp: float, threshold: float) -> dict:
         "pr_auc": float(average_precision_score(labels, probs)),
         "roc_auc": float(roc_auc_score(labels, probs)),
         "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
-        "by_category": by_cat,
+        "by_category": summarize_groups(labels, preds, data["categories"]),
+        "by_subcategory": summarize_groups(labels, preds, data["subcategories"]),
         "top_false_positives": false_positives[:20],
         "top_false_negatives": false_negatives[:20],
     }
@@ -220,6 +228,7 @@ def main() -> None:
         "temperature": temp,
         "threshold": thr,
         "val_summary": {k: val_report[k] for k in ("precision", "recall", "f1", "f0.5", "pr_auc", "roc_auc")},
+        "val_by_subcategory": val_report["by_subcategory"],
     }
     (out_dir / "calibration.json").write_text(json.dumps(calib, indent=2, ensure_ascii=False), encoding="utf-8")
     (out_dir / "test_report.json").write_text(json.dumps(test_report, indent=2, ensure_ascii=False), encoding="utf-8")

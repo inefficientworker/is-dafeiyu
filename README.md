@@ -75,9 +75,17 @@ uv run python -m is_dafeiyu.predict /path/to/image_or_dir
 uv run python -m is_dafeiyu.predict /path/to/image.png --threshold 0.75 --json
 ```
 
+### MobileNetV3 困难负样本验证
+
+`configs/mobilenetv3_large.yaml` 使用硬标签训练，产物写入 `artifacts/mobilenetv3_large_100_hard/`。重建划分后，在新划分上训练教师并重新生成 logits，再用 `configs/distill_mobilenetv3_large.yaml` 做蒸馏对照。对于已审核为 `negative_gemini` 的样本，如果教师判为正类，蒸馏版也只使用硬标签。
+
+本地人工核对的样本通过 `data/curated/meta.jsonl` 加入划分。每行包含 `path`、`label`、`category`、`subcategory` 和 `group_id`，同一原图的变体共用 `group_id`。纯 Gemini 图使用 `label: 0`、`category: negative_blue_chars` 和 `subcategory: negative_gemini`。
+
+检查 `calibration.json` 的 `val_by_subcategory` 和 `test_report.json` 的 `by_subcategory`，分别看 Gemini 在验证集和测试集上的样本数与误报数。重新导出 FP16 后，用实际网页回归 Gemini 梗图、大肥鱼 Q 版和合影。
+
 ## 数据集与版权声明
 
-仓库中的清洗数据集（`data/processed/` 与 `data/splits/`）共包含 2,506 条无泄漏划分样本（`train` 2,004 / `val` 251 / `test` 251），已通过 LFS 存储。
+初始发布的数据集通过 LFS 存储，共 2,506 条样本（`train` 2,004 / `val` 251 / `test` 251）。本地重建后请以 `data/splits/` 中的 CSV 为准。
 
 数据集中的所有图片**仅限非商业研究、学习与分类器评估使用**，完整来源与版权声明见 [DATASET_NOTICE.md](./DATASET_NOTICE.md)：
 - **正样本与 AI 拟人角色负样本**：来自 [EDMOK/blue-fish-archive](https://github.com/EDMOK/blue-fish-archive)（[fisharchive.cc](https://fisharchive.cc/)）。鲸鱼娘原设作者为 **上善无形**，DeepSeek 女仆鲸鱼娘二设作者为 **ZipZipPipe**，依 **CC BY-NC-SA 4.0** 协议授权。

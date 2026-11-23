@@ -109,6 +109,7 @@ def train_one_epoch(
     scaler: torch.amp.GradScaler | None = None,
     kd_alpha: float = 0.0,
     kd_temperature: float = 3.0,
+    hard_label_subcategories: frozenset[str] = frozenset(),
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -131,12 +132,20 @@ def train_one_epoch(
         if kd_alpha > 0.0 and "teacher_logit" in batch:
             t_logits = batch["teacher_logit"].to(device, dtype=torch.float32, non_blocking=True)
             t_probs = torch.sigmoid(t_logits / kd_temperature)
-            loss_kd = F.binary_cross_entropy_with_logits(logits_f32 / kd_temperature, t_probs) * (
-                kd_temperature * kd_temperature
-            )
+            loss_kd = F.binary_cross_entropy_with_logits(
+                logits_f32 / kd_temperature, t_probs, reduction="none"
+            ) * (kd_temperature * kd_temperature)
             loss = (1.0 - kd_alpha) * loss_hard + kd_alpha * loss_kd
+            if hard_label_subcategories:
+                reviewed = torch.tensor(
+                    [subcategory in hard_label_subcategories for subcategory in batch["subcategory"]],
+                    device=device,
+                    dtype=torch.bool,
+                )
+                loss = torch.where(reviewed & (labels == 0) & (t_logits >= 0), loss_hard, loss)
         else:
             loss = loss_hard
+        loss = loss.mean()
 
         if scaler is not None and scaler.is_enabled():
             scaler.scale(loss).backward()
@@ -188,6 +197,7 @@ def main() -> None:
     teacher_logits = None
     kd_alpha = 0.0
     kd_temp = 3.0
+    hard_label_subcategories = frozenset(distill_cfg.get("hard_label_subcategories", []))
     if distill_cfg.get("teacher_logits_path"):
         teacher_logits = load_teacher_logits(distill_cfg["teacher_logits_path"])
         kd_alpha = float(distill_cfg.get("alpha", 0.5))
@@ -199,6 +209,20 @@ def main() -> None:
 
     train_ds = DafeiyuDataset(cfg["data"]["train_csv"], train_tf, is_train=True, teacher_logits=teacher_logits)
     val_ds = DafeiyuDataset(cfg["data"]["val_csv"], val_tf, is_train=False)
+    if teacher_logits is not None:
+        missing = [row["path"] for row in train_ds.rows if row["path"] not in teacher_logits]
+        if missing:
+            raise ValueError(
+                f"Teacher cache is missing {len(missing)} training samples (e.g. {missing[0]}). "
+                "Regenerate teacher logits for the current splits."
+            )
+        hard_only = sum(
+            row["label"] == 0
+            and row["subcategory"] in hard_label_subcategories
+            and teacher_logits[row["path"]] >= 0
+            for row in train_ds.rows
+        )
+        print(f"[train] Reviewed negatives with conflicting teacher logits: {hard_only} (hard labels only)")
 
     n_pos = sum(r["label"] for r in train_ds.rows)
     n_neg = len(train_ds.rows) - n_pos
@@ -224,7 +248,7 @@ def main() -> None:
     )
 
     model.to(device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=device))
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=device), reduction="none")
     label_smoothing = float(cfg["training"]["label_smoothing"])
     scaler = torch.amp.GradScaler("cuda", enabled=(amp_enabled and device.type == "cuda" and amp_dtype == torch.float16))
 
@@ -283,6 +307,7 @@ def main() -> None:
             scaler=scaler,
             kd_alpha=kd_alpha,
             kd_temperature=kd_temp,
+            hard_label_subcategories=hard_label_subcategories,
         )
         metrics = evaluate_loader(model, val_loader, device, use_amp)
         save_if_best("stage1", ep, loss, metrics)
@@ -314,6 +339,7 @@ def main() -> None:
             scaler=scaler,
             kd_alpha=kd_alpha,
             kd_temperature=kd_temp,
+            hard_label_subcategories=hard_label_subcategories,
         )
         sched2.step()
         metrics = evaluate_loader(model, val_loader, device, use_amp)

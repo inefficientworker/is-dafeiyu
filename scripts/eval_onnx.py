@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import collections
 import csv
 import json
 import time
@@ -23,6 +22,7 @@ from sklearn.metrics import (
 )
 
 from is_dafeiyu.dataset import build_transforms, load_rgb_image
+from is_dafeiyu.evaluate import summarize_groups
 from is_dafeiyu.export import image_to_rgba_uint8
 
 
@@ -46,8 +46,6 @@ def evaluate_onnx(
 
     inputs: list[np.ndarray] = []
     labels: list[int] = []
-    cats: list[str] = []
-    paths: list[str] = []
 
     for r in rows:
         p = r["path"]
@@ -58,8 +56,6 @@ def evaluate_onnx(
             arr = eval_tf(rgb).unsqueeze(0).numpy().astype(np.float32)
         inputs.append(arr)
         labels.append(int(r["label"]))
-        cats.append(r["category"])
-        paths.append(p)
 
     for arr in inputs[:warmup]:
         sess.run(None, {input_name: arr})
@@ -77,20 +73,6 @@ def evaluate_onnx(
     preds_np = (probs_np >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(labels_np, preds_np, labels=[0, 1]).ravel()
 
-    by_cat: dict[str, dict] = {}
-    cat_indices: dict[str, list[int]] = collections.defaultdict(list)
-    for i, c in enumerate(cats):
-        cat_indices[c].append(i)
-    for cat, idxs in sorted(cat_indices.items()):
-        c_labels = labels_np[idxs]
-        c_preds = preds_np[idxs]
-        if (c_labels == 0).all():
-            c_fp = int((c_preds == 1).sum())
-            by_cat[cat] = {"count": len(idxs), "false_positives": c_fp, "fpr": float(c_fp / len(idxs))}
-        else:
-            c_fn = int((c_preds == 0).sum())
-            by_cat[cat] = {"count": len(idxs), "false_negatives": c_fn, "recall": float(1.0 - c_fn / len(idxs))}
-
     return {
         "onnx_path": str(onnx_path),
         "size_mb": round(onnx_path.stat().st_size / (1024 * 1024), 3),
@@ -106,7 +88,8 @@ def evaluate_onnx(
         "pr_auc": float(average_precision_score(labels_np, probs_np)),
         "roc_auc": float(roc_auc_score(labels_np, probs_np)),
         "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
-        "by_category": by_cat,
+        "by_category": summarize_groups(labels_np, preds_np, [r["category"] for r in rows]),
+        "by_subcategory": summarize_groups(labels_np, preds_np, [r.get("subcategory") or r["category"] for r in rows]),
     }
 
 

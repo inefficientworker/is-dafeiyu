@@ -20,6 +20,7 @@ distillation:
   teacher_logits_path: artifacts/dinov2_base/teacher_logits.json
   alpha: 0.5
   temperature: 3.0
+  hard_label_subcategories: [negative_gemini]
 
 training:
   device: auto

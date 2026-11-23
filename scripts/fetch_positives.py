@@ -26,6 +26,13 @@ POSITIVE_KEYWORDS = (
     "whale",
 )
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+REVIEWED_POSITIVES = (
+    "logo/deepseek_蓝鲸_彩色.png",
+    "logo/deepseek_蓝鲸_黑色.png",
+    "原始立绘/deepseek_whale.png",
+    "art/v1/deepseek-chibi-hug.webp",
+    "memes/120302wg44ju245iDQ38xu.png",
+)
 
 
 def clone_or_update_repo() -> None:
@@ -78,6 +85,10 @@ def is_positive_text(text: str) -> bool:
     return any(k in low for k in POSITIVE_KEYWORDS)
 
 
+def mascot_subcategory(src_path: Path, fallback: str) -> str:
+    return "negative_gemini" if src_path.stem.lower().startswith("gemini-") else fallback
+
+
 def main() -> None:
     clone_or_update_repo()
     OUT_POS_DIR.mkdir(parents=True, exist_ok=True)
@@ -108,7 +119,7 @@ def main() -> None:
                     "path": str(p),
                     "label": 1 if is_pos else 0,
                     "category": "positive_dafeiyu" if is_pos else "negative_blue_chars",
-                    "subcategory": "repo_sticker" if is_pos else "repo_other_ai_mascot",
+                    "subcategory": "repo_sticker" if is_pos else mascot_subcategory(src_path, "repo_other_ai_mascot"),
                     "group_id": group_id,
                     "source": rel_orig,
                 }
@@ -134,42 +145,36 @@ def main() -> None:
                         "path": str(p),
                         "label": 1 if is_pos else 0,
                         "category": "positive_dafeiyu" if is_pos else "negative_blue_chars",
-                        "subcategory": "repo_charart" if is_pos else "repo_other_ai_charart",
+                        "subcategory": "repo_charart" if is_pos else mascot_subcategory(src_path, "repo_other_ai_charart"),
                         "group_id": group_id,
                         "source": str(src_path.relative_to(RAW_REPO_DIR)),
                     }
                 )
 
-    # 3. Process extra positive directories (logo, 原始立绘, art/v1, memes)
-    extra_pos_dirs = [
-        RAW_REPO_DIR / "logo",
-        RAW_REPO_DIR / "原始立绘",
-        RAW_REPO_DIR / "art" / "v1",
-        RAW_REPO_DIR / "memes",
-    ]
-    for d in extra_pos_dirs:
-        if not d.exists():
+    # 3. Include reviewed originals from mixed-use directories.
+    for rel in REVIEWED_POSITIVES:
+        src_path = RAW_REPO_DIR / rel
+        if not src_path.is_file():
+            print(f"[warn] Reviewed positive missing: {src_path}")
             continue
-        for src_path in sorted(d.rglob("*")):
-            if not src_path.is_file() or src_path.suffix.lower() not in IMAGE_EXTS:
-                continue
-            group_id = f"repo_extra_{d.name}_{src_path.stem}"
-            try:
-                saved_paths = extract_frames(src_path, OUT_POS_DIR, group_id, max_frames=1)
-            except Exception as exc:
-                print(f"[warn] Failed to decode {src_path}: {exc}")
-                continue
-            for p in saved_paths:
-                records.append(
-                    {
-                        "path": str(p),
-                        "label": 1,
-                        "category": "positive_dafeiyu",
-                        "subcategory": f"repo_{d.name}",
-                        "group_id": group_id,
-                        "source": str(src_path.relative_to(RAW_REPO_DIR)),
-                    }
-                )
+        directory = src_path.parent.name
+        group_id = f"repo_extra_{directory}_{src_path.stem}"
+        try:
+            saved_paths = extract_frames(src_path, OUT_POS_DIR, group_id, max_frames=1)
+        except Exception as exc:
+            print(f"[warn] Failed to decode {src_path}: {exc}")
+            continue
+        for p in saved_paths:
+            records.append(
+                {
+                    "path": str(p),
+                    "label": 1,
+                    "category": "positive_dafeiyu",
+                    "subcategory": f"repo_{directory}",
+                    "group_id": group_id,
+                    "source": rel,
+                }
+            )
 
     META_PATH.parent.mkdir(parents=True, exist_ok=True)
     with META_PATH.open("w", encoding="utf-8") as f:
