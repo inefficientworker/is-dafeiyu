@@ -28,7 +28,7 @@
 - `src/is_dafeiyu/`:
   - `dataset.py`: PyTorch `Dataset`, alpha-channel background compositing, and augmentations.
   - `model.py`: `timm` backbone wrapper, XPU device resolution, and two-stage freeze/unfreeze helpers.
-  - `train.py`: Stage 1 (linear probe) + Stage 2 (partial unfreeze) training loop on XPU.
+  - `train.py`: Stage 1 (linear probe) + Stage 2 (partial unfreeze) MobileNetV3 training loop on XPU.
   - `evaluate.py`: FP32 temperature/threshold calibration on the independent `calibration` split, strict operating constraints, and per-category FPR reporting on `test`.
   - `predict.py`: CLI inference for static images, animated GIF/WebP (max probability across frames), and directories.
   - `export.py`: ONNX export with baked-in temperature-scaled sigmoid + numerical parity check.
@@ -48,7 +48,7 @@ uv run python scripts/build_dataset.py
 # Train on Intel XPU, calibrate/evaluate, and export ONNX
 uv run python -m is_dafeiyu.train --config configs/default.yaml
 uv run python -m is_dafeiyu.evaluate --config configs/default.yaml
-uv run python -m is_dafeiyu.export --checkpoint artifacts/dinov2_base_v2/best.pt
+uv run python -m is_dafeiyu.export --checkpoint artifacts/mobilenetv3_v2/best.pt --browser --quantize fp16
 
 # Run CLI inference (single image or directory)
 uv run python -m is_dafeiyu.predict images/
@@ -65,6 +65,6 @@ uv run python -m is_dafeiyu.predict images/example.png --threshold 0.75 --json
 6. **Code style**: Keep `src/is_dafeiyu/` free of regular expressions unless strictly required; prefer plain string operations.
 7. **Small-data training**: Freeze parameters AND module state in frozen subtrees. Whole-image labels must use whole-image augmentation; do not introduce random crops/erasing without target annotations. `pos_weight` is explicit, default 1. Source groups have equal sampling contribution.
 8. **Separate selection and calibration**: Use FP32 val logits for checkpoint selection. Fit calibration only on the separate calibration split. Constraints are empirical precision, recall, total FPR and worst negative-subcategory FPR; infeasible runs save diagnostic reports and fail instead of relaxing requirements. Confidence bounds assume independent observations and do not prove unseen-domain accuracy.
-9. **Versioned artifacts**: New configs use `_v2` output directories. Training refuses to overwrite a previous run and records split hashes. Legacy checkpoints without provenance remain usable for inference but cannot be recalibrated as if they had never seen the new holdouts. Fix conflicting template/label metadata before rebuilding; never delete split state to hide a conflict.
+9. **Versioned artifacts**: The training config writes to `artifacts/mobilenetv3_v2/`. Training refuses to overwrite a previous run and records split hashes. Legacy checkpoints without provenance remain usable for inference but cannot be recalibrated as if they had never seen the new holdouts. Fix conflicting template/label metadata before rebuilding; never delete split state to hide a conflict.
 10. **Distillation/deployment**: Use `distillation.teacher_checkpoint`, with aligned augmented pixels and normalization; cached whole-image logits are no longer training targets. Export validates all calibration images plus batches on the final ONNX artifact, then writes `<model>.calibration.json` with its own threshold and hash. Consume that sidecar rather than the PyTorch threshold. See `docs/training-pipeline.md` for the workflow and real-data E2E runner.
 11. **Aquatic negatives**: `data_policy.py` defines the real aquatic subcategories shared by collection and splitting. `build_dataset.py --real-aquatic-train-limit 60` caps eligible whole training groups and records excluded paths; `-1` disables the cap for diagnostic comparisons. Files and historical split assignments remain intact. Illustrated fish/whales stay in `negative_fish`.

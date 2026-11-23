@@ -78,7 +78,7 @@ def main() -> None:
     )
     parser.add_argument("target", type=str, help="Image file or directory")
     parser.add_argument(
-        "--checkpoint", type=str, default="artifacts/dinov2_base_v2/best.pt"
+        "--checkpoint", type=str, default="artifacts/mobilenetv3_user_20261123/best.pt"
     )
     parser.add_argument("--calibration", type=str, default=None)
     parser.add_argument("--threshold", type=float, default=None)

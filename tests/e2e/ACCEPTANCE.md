@@ -31,3 +31,7 @@ Before implementation, the required failure cases are:
    label and split assignment. Rebuilding must keep identical CSVs and relative
    split-state identities. Removing source-machine metadata must not change model
    weights or inference results, and calibration hashes must bind the published files.
+9. The browser must offer exactly one default model, load its real published ONNX
+   and calibration, preserve the exact threshold, remove retired model caches,
+   classify positive/group-shot and confusing-negative images through real WASM,
+   and reload the same model from cache with model-host requests blocked.

@@ -5,96 +5,64 @@ library_name: timm
 tags:
   - image-classification
   - binary-classification
-  - dinov2
   - mobilenetv3
-  - convnext
   - onnx
   - onnxruntime-web
-  - anime
   - dafeiyu
   - deepseek-mascot
 ---
 
 # is-dafeiyu
 
-- **GitHub**：<https://github.com/inefficientworker/is-dafeiyu>
-- **Hugging Face**：<https://huggingface.co/inefficentworker/is-dafeiyu>
-- **浏览器在线测试（GitHub Pages）**：<https://inefficientworker.github.io/is-dafeiyu/>
+检测图片中是否出现 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）**，支持表情包、合影、Q 版和 Logo。
 
-用于检测图片中是否包含 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）** 的二分类图像识别模型，支持静态图片、GIF/WebP 动图、目录批量推理以及**浏览器端 WASM 离线推理**，覆盖合影及 Q 版/Logo 变体。
+**直接使用 [在线检测器](https://inefficientworker.github.io/is-dafeiyu/)**：点击下载模型后即可检测，图片在浏览器内处理。
 
-初始版本使用 DINOv2 教师与蒸馏学生模型。当前流程采用独立的 train / val / calibration / test 划分、整图增强、冻结模块状态保护与高精度约束；真实鱼鲸照片并入无关负类，训练默认保留约 60 张，重点评估易混淆角色。具体训练方法见 [训练流程](docs/training-pipeline.md)。
+- [GitHub 代码](https://github.com/inefficientworker/is-dafeiyu)
+- [Hugging Face 模型与数据](https://huggingface.co/inefficentworker/is-dafeiyu)
 
-## 当前候选模型
+## 模型
 
-`artifacts/mobilenetv3_user_20261123/` 提供使用新增 66 张人工标签图片训练的候选版本：`best.pt`、`calibration.json`、`model_browser_fp16.onnx` 与 `model_browser_fp16.calibration.json`。数据与权重可从 Hugging Face 下载，GitHub 保存代码。
+只维护一个默认模型：**MobileNetV3-Large，8.05 MB FP16 ONNX**。网页和命令行使用同一组训练权重。
 
-FP16 ONNX 阈值为 `0.42624813318252563`，必须使用配套校准文件。相同的 265 张测试图上，误报 1/225、漏报 0/40，Precision 97.56%、Recall 100%；已知 X 回归集仍有 1/4 负样本误报。该版本未达到 98% Precision 目标，另有新样本回退，作为候选发布，不设为浏览器默认模型。
+文件位于 Hugging Face 的 `artifacts/mobilenetv3_user_20261123/`：
 
-```bash
-uv run python -m is_dafeiyu.predict images/example.png \
-  --checkpoint artifacts/mobilenetv3_user_20261123/best.pt --json
-```
+| 文件 | 用途 |
+| --- | --- |
+| `model_browser_fp16.onnx` | 浏览器或 ONNX Runtime 推理 |
+| `model_browser_fp16.calibration.json` | ONNX 配套阈值与文件哈希 |
+| `best.pt` | Python 推理和继续训练 |
+| `calibration.json` | PyTorch 配套温度与阈值 |
 
-## 历史浏览器轻量 ONNX 模型（`onnx/`）
+ONNX 输入为 `uint8 [batch, 224, 224, 4]` RGBA，透明合成、归一化和温度缩放已内置。默认阈值 **0.42624813318252563**，网页自动读取配套校准文件。
 
-以下指标来自初始版本的历史测试集，不代表当前扩展数据集或实际使用中的误报率。
+当前 265 张测试图：负样本 **1/225 误报**，正样本 **0/40 漏报**，Precision **97.56%**，Recall **100%**。已知 X 回归集有 1 张误报；持续补充易混淆角色进行改进。
 
-所有浏览器模型均为**单文件 `.onnx`**（无 `.onnx.data`），并已将 **RGBA `uint8 [batch, 224, 224, 4]` 白底透明合成 + `/255` + ImageNet `mean/std` 归一化 + `NHWC → NCHW` + 温度缩放 Sigmoid** 全部烘焙进计算图，浏览器端直接传入 Canvas `ImageData` 即可推理：
-
-| 模型 | 文件 | 体积 | 推荐阈值 | CPU 单图耗时 | Precision | Recall | F1 | PR-AUC | FP / FN |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **MobileNetV3-Large (FP16)** *(推荐)* | `onnx/mobilenetv3_large_100_fp16.onnx` | **8.05 MB** | `0.70` | **3.1 ms** | **1.0000** | **1.0000** | **1.0000** | **1.0000** | **0 / 0** |
-| **ConvNeXt-Atto (INT8 静态量化)** *(极致超小)* | `onnx/convnext_atto_int8_static.onnx` | **3.59 MB** | `0.50` | 5.9 ms | **1.0000** | 0.9730 | 0.9863 | 0.9993 | **0 / 1** |
-| ConvNeXt-Atto (FP16) | `onnx/convnext_atto_fp16.onnx` | 6.52 MB | `0.50` | 7.7 ms | 1.0000 | 0.9730 | 0.9863 | 1.0000 | 0 / 1 |
-| ConvNeXt-Atto (FP32) | `onnx/convnext_atto_fp32.onnx` | 12.93 MB | `0.50` | 5.6 ms | 1.0000 | 0.9730 | 0.9863 | 1.0000 | 0 / 1 |
-| MobileNetV3-Large (FP32) | `onnx/mobilenetv3_large_100_fp32.onnx` | 16.03 MB | `0.70` | 3.0 ms | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 0 / 0 |
-
-## 教师模型产物（`artifacts/dinov2_base/`）
-
-| 文件 | 说明 |
-| :--- | :--- |
-| `best.pt` | PyTorch 训练检查点（验证集 F0.5 / 高精度校准最优模型） |
-| `model.onnx` + `model.onnx.data` | 导出的 ONNX 模型（已内置温度缩放 Sigmoid） |
-| `calibration.json` | 校准温度（`0.2470`）与分类阈值（`0.5`） |
-| `test_report.json` | 测试集评估报告 |
-| `history.json` | 第一、二阶段训练指标记录 |
-
-### 教师模型测试集评估结果（`n = 251`）
-
-| 指标 | 数值 |
-| :--- | :--- |
-| **Accuracy** | `0.9960` |
-| **Precision** | `1.0000`（214 张负样本 `0` 误报） |
-| **Recall** | `0.9730`（37 张正样本检出 `36` 张） |
-| **F1** | `0.9863` |
-| **F0.5** | `0.9945` |
-| **PR-AUC / ROC-AUC** | `1.0000` / `1.0000` |
-
-各类别测试集明细：
-- `negative_blue_chars`（`n = 84`）：`0` 误报（`FPR = 0.0`）
-- `negative_fish`（`n = 46`）：`0` 误报（`FPR = 0.0`）
-- `negative_unrelated`（`n = 84`）：`0` 误报（`FPR = 0.0`）
-- `positive_dafeiyu`（`n = 37`）：检出 `36 / 37`（`Recall = 0.9730`）
-
-## 快速开始
+## Python 使用
 
 ```bash
-# 使用 uv 安装依赖（Python 3.12）
 uv sync --python 3.12
-
-# 对单张图片、GIF/WebP 动图或目录进行推理
-uv run python -m is_dafeiyu.predict images/
-uv run python -m is_dafeiyu.predict images/example.png --threshold 0.75 --json
+uv run hf download inefficentworker/is-dafeiyu \
+  --include 'artifacts/mobilenetv3_user_20261123/*' --local-dir .
+uv run python -m is_dafeiyu.predict images/ --json
 ```
 
-### MobileNetV3 困难负样本验证
+默认加载上述 `best.pt` 及其校准文件，无需选模型。
 
-`configs/mobilenetv3_large.yaml` 使用硬标签训练，产物写入 `artifacts/mobilenetv3_large_100_hard_v2/`。重建划分后，在固定划分上训练教师，再用 `configs/distill_mobilenetv3_large.yaml` 对相同增强图像做在线蒸馏对照。对于已审核为 `negative_gemini` 的样本，如果教师判为正类，蒸馏版也只使用硬标签。
+## 训练
 
-本地人工核对的样本通过 `data/curated/meta.jsonl` 加入划分。每行包含 `path`、`label`、`category`、`subcategory` 和 `group_id`，同一原图的变体共用 `group_id`。纯 Gemini 图使用 `label: 0`、`category: negative_blue_chars` 和 `subcategory: negative_gemini`。
+只有一个配置文件 `configs/default.yaml`。下载数据后运行：
 
-检查 `calibration.json` 的 `calibration_by_subcategory` 和评估输出的 `by_subcategory`，分别看 Gemini 在独立校准集和测试集上的样本数与误报数。重新导出 FP16 后，用实际网页回归 Gemini 梗图、大肥鱼 Q 版和合影。
+```bash
+uv run hf download inefficentworker/is-dafeiyu --include 'data/*' --local-dir .
+uv run python scripts/build_dataset.py
+uv run python -m is_dafeiyu.train
+uv run python -m is_dafeiyu.evaluate
+uv run python -m is_dafeiyu.export \
+  --checkpoint artifacts/mobilenetv3_v2/best.pt --browser --quantize fp16
+```
+
+训练产物写入 `artifacts/mobilenetv3_v2/`。训练使用独立的 train / val / calibration / test 划分、整图增强、冻结模块状态保护与高精度约束，详情见 [训练流程](docs/training-pipeline.md)。
 
 ## 数据集与版权声明
 

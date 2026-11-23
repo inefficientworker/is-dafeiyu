@@ -7,7 +7,7 @@
 const DEFAULT_ORT_CDN = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
 
 export class DafeiyuDetector {
-  constructor({ session, ort, threshold = 0.7, imageSize = 224 }) {
+  constructor({ session, ort, threshold, imageSize = 224 }) {
     this.session = session;
     this.ort = ort;
     this.threshold = threshold;
@@ -17,6 +17,9 @@ export class DafeiyuDetector {
   }
 
   static async create(modelSource, options = {}) {
+    if (!Number.isFinite(options.threshold) || options.threshold < 0 || options.threshold > 1) {
+      throw new Error("请提供模型校准文件中的 threshold");
+    }
     const ort = options.ort || globalThis.ort;
     if (!ort) {
       throw new Error(
@@ -37,7 +40,7 @@ export class DafeiyuDetector {
     return new DafeiyuDetector({
       session,
       ort,
-      threshold: options.threshold ?? 0.7,
+      threshold: options.threshold,
       imageSize: options.imageSize ?? 224,
     });
   }

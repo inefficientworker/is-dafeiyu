@@ -224,7 +224,7 @@ def main():
     report["checks"]["cross_split_template_conflict"] = True
     save()
 
-    cfg = yaml.safe_load(Path("configs/mobilenetv3_large.yaml").read_text())
+    cfg = yaml.safe_load(Path("configs/default.yaml").read_text())
     for name in SPLITS:
         cfg["data"][name + "_csv"] = str(split_dir / (name + ".csv"))
     cfg["data"]["num_workers"] = 2

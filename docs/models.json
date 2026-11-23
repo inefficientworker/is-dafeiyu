@@ -1,0 +1,29 @@
+{
+  "repo_id": "inefficentworker/is-dafeiyu",
+  "default_model": "mobilenetv3",
+  "models": [
+    {
+      "id": "mobilenetv3",
+      "name": "大肥鱼检测模型",
+      "badge": "默认模型",
+      "recommended": true,
+      "filename": "artifacts/mobilenetv3_user_20261123/model_browser_fp16.onnx",
+      "calibration": "artifacts/mobilenetv3_user_20261123/model_browser_fp16.calibration.json",
+      "checkpoint": "artifacts/mobilenetv3_user_20261123/best.pt",
+      "size_bytes": 8439096,
+      "size_mb": 8.05,
+      "threshold": 0.42624813318252563,
+      "onnx_sha256": "52a25ed2102b84cd552241ba5b29e4c53708fe256cead50a25deaea039e5588a",
+      "image_size": 224,
+      "input_format": "rgba_uint8",
+      "metrics": {
+        "test_count": 265,
+        "precision": 0.975609756097561,
+        "recall": 1.0,
+        "fp": 1,
+        "fn": 0
+      },
+      "description": "适用于日常图片、表情包和合影检测。下载一次后可从浏览器缓存加载。"
+    }
+  ]
+}

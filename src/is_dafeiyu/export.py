@@ -291,7 +291,7 @@ def verify_onnx_parity(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--checkpoint", type=str, default="artifacts/dinov2_base_v2/best.pt"
+        "--checkpoint", type=str, default="artifacts/mobilenetv3_user_20261123/best.pt"
     )
     parser.add_argument("--calibration", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)

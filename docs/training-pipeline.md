@@ -25,26 +25,34 @@ uv run python scripts/build_dataset.py
 ## 训练、校准、部署
 
 ```bash
-uv run python -m is_dafeiyu.train --config configs/mobilenetv3_large.yaml
-uv run python -m is_dafeiyu.evaluate --config configs/mobilenetv3_large.yaml
+uv run python -m is_dafeiyu.train --config configs/default.yaml
+uv run python -m is_dafeiyu.evaluate --config configs/default.yaml
 uv run python -m is_dafeiyu.export \
-  --checkpoint artifacts/mobilenetv3_large_100_hard_v2/best.pt \
+  --checkpoint artifacts/mobilenetv3_v2/best.pt \
   --browser --quantize fp16
 uv run python scripts/eval_onnx.py \
-  --onnx artifacts/mobilenetv3_large_100_hard_v2/model_browser_fp16.onnx
+  --onnx artifacts/mobilenetv3_v2/model_browser_fp16.onnx
 ```
 
 训练默认正类权重为 1，按来源组采样；可配置 `training.subcategory_loss_weights` 对审核过的困难负类加权，但需要在固定 val 上评估收益。增强保持全图；冻结的骨干子树保持 eval 状态。每阶段通过 `training_audit.json` 验证冻结参数和缓冲区没有变化。
 
 训练使用 BF16，选模与 PyTorch 校准使用 FP32。配置明确指定 `target_precision`、`min_recall`、`max_fpr`、`max_subcategory_fpr`。先满足所有约束，再优先召回率。只有符合条件的 checkpoint 才命名为 `best.pt`；没有达标模型时保存 `candidate.pt` 和历史并以非零退出。不满足条件的校准保存 `calibration_attempt.json`，不会静默回退 F-beta。
 
-蒸馏配置使用教师 checkpoint，对相同增强图像在线计算教师输出，并转换教师所需归一化。教师与真实标签冲突的样本仅使用真实标签损失。教师须有匹配的数据划分记录；旧教师不能把已经见过的图片重新当作未知留出集。
+默认流程直接训练 MobileNetV3。训练模块保留在线蒸馏能力，研究时可在配置中显式提供 `distillation.teacher_checkpoint`；教师须有匹配的数据划分记录。
 
 导出先写候选文件，核对完整 calibration 集的单图/批量推理差异，再按最终 ONNX 输出选择部署阈值。通过后才替换目标文件，并写入 `model_browser_fp16.calibration.json`。浏览器集成应读取该文件的 `threshold`；温度已烘焙进模型，不能再次缩放。部署时模型和 sidecar 应一起发布，当前静态网页的已发布模型目录不会自动更新。
 
 `calibration.json` 绑定 PyTorch checkpoint，`<model>.calibration.json` 绑定最终 ONNX SHA256，不能混用。新训练配置写入 `_v2` 目录，已有训练输出会被拒绝覆盖；更换实验时选择新目录。旧 checkpoint 缺少划分记录，不能用于新的正式校准，仍可用于原有推理或独立诊断。
 
 ## 真实端到端验证
+
+浏览器验收使用 Node.js 和 Playwright，验证默认模型下载、实际 WASM 检测、旧缓存清理和缓存加载：
+
+```bash
+node tests/e2e/default_model.cjs ../is-dafeiyu-reports/browser
+```
+
+可用 `DAFEIYU_PLAYWRIGHT` 指定 Playwright 模块，`DAFEIYU_CHROME` 指定浏览器可执行文件。
 
 ```bash
 uv run python tests/e2e/training_pipeline.py --output ../is-dafeiyu-reports/my_pipeline_e2e
@@ -58,6 +66,6 @@ uv run python tests/e2e/reject_known_failures.py \
 
 通过 `--output` 指定独立的验收目录。依赖数据集、缓存的预训练 MobileNetV3 权重和 `data/regression/x` 中的回归图片。该命令验证增量构建、跨集合模板冲突、矛盾标签、两阶段训练、FP32 校准、FP16 导出与实际 CLI 推理，保留命令、日志、哈希及 `report.json`。不会修改 `data/splits` 或既有模型。
 
-历史故障回归另需指定保存的 Gemini-batch2 模型、weighted 模型与不同的教师检查点；这些诊断权重不随候选模型发布。
+历史故障回归另需指定保存的 Gemini-batch2 模型、weighted 模型与不同的教师检查点；这些诊断权重由测试调用者另行提供。
 
 短训练的统计成绩不作为新模型精度声明；若真实数据下训练或校准不达标，应保留失败产物，不通过降低生产约束伪造成功。另见 `tests/e2e/ACCEPTANCE.md` 的实施前验收条件。
