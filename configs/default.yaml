@@ -1,0 +1,35 @@
+seed: 42
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  splits_dir: data/splits
+  train_csv: data/splits/train.csv
+  val_csv: data/splits/val.csv
+  test_csv: data/splits/test.csv
+  image_size: 224
+  num_workers: 4
+
+model:
+  backbone: vit_base_patch14_reg4_dinov2.lvd142m
+  pretrained: true
+  drop_rate: 0.2
+  drop_path_rate: 0.15
+
+training:
+  device: auto  # auto -> xpu if available, else cpu
+  use_bf16: true
+  batch_size: 32
+  weight_decay: 0.05
+  label_smoothing: 0.03
+  stage1_epochs: 5
+  stage1_lr: 1.0e-3
+  stage2_epochs: 15
+  stage2_lr: 3.0e-5
+  unfreeze_last_blocks: 3
+  pos_weight_scale: 1.0
+  output_dir: artifacts/dinov2_base
+
+evaluation:
+  target_precision: 0.98
+  f_beta: 0.5
