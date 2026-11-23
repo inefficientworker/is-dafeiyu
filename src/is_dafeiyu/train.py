@@ -11,21 +11,41 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import yaml
 from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score, roc_auc_score
 from torch import nn
 from torch.utils.data import DataLoader
 
 from is_dafeiyu.dataset import DafeiyuDataset, build_transforms
-from is_dafeiyu.model import create_classifier, freeze_backbone, resolve_device, unfreeze_last_blocks
+from is_dafeiyu.model import (
+    create_classifier,
+    freeze_backbone,
+    resolve_amp,
+    resolve_device,
+    unfreeze_last_blocks,
+)
 
 
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
     if hasattr(torch, "xpu") and torch.xpu.is_available():
         torch.xpu.manual_seed_all(seed)
+
+
+def load_teacher_logits(path: str | Path) -> dict[str, float]:
+    """Load precomputed teacher logits keyed by sample path from .json or .npz."""
+    p = Path(path)
+    if p.suffix.lower() == ".npz":
+        data = np.load(p, allow_pickle=False)
+        return {str(k): float(v) for k, v in zip(data["paths"].tolist(), data["logits"].tolist())}
+    payload = json.loads(p.read_text(encoding="utf-8"))
+    raw = payload.get("logits", payload)
+    return {str(k): float(v) for k, v in raw.items()}
 
 
 @torch.no_grad()
@@ -33,17 +53,17 @@ def evaluate_loader(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
-    use_bf16: bool,
+    use_amp: bool,
 ) -> dict:
     model.eval()
     all_logits: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
     all_cats: list[str] = []
 
-    amp_enabled = use_bf16 and device.type in ("xpu", "cuda")
+    amp_enabled, amp_dtype = resolve_amp(device, use_amp)
     for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
-        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
             logits = model(images).squeeze(-1)
         all_logits.append(logits.float().cpu().numpy())
         all_labels.append(batch["label"].numpy())
@@ -84,13 +104,16 @@ def train_one_epoch(
     optimizer: torch.optim.Optimizer,
     criterion: nn.Module,
     device: torch.device,
-    use_bf16: bool,
+    use_amp: bool,
     label_smoothing: float,
+    scaler: torch.amp.GradScaler | None = None,
+    kd_alpha: float = 0.0,
+    kd_temperature: float = 3.0,
 ) -> float:
     model.train()
     total_loss = 0.0
     total_n = 0
-    amp_enabled = use_bf16 and device.type in ("xpu", "cuda")
+    amp_enabled, amp_dtype = resolve_amp(device, use_amp)
 
     for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
@@ -101,12 +124,30 @@ def train_one_epoch(
             targets = labels
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
             logits = model(images).squeeze(-1)
-            loss = criterion(logits, targets)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        logits_f32 = logits.float()
+        loss_hard = criterion(logits_f32, targets)
+        if kd_alpha > 0.0 and "teacher_logit" in batch:
+            t_logits = batch["teacher_logit"].to(device, dtype=torch.float32, non_blocking=True)
+            t_probs = torch.sigmoid(t_logits / kd_temperature)
+            loss_kd = F.binary_cross_entropy_with_logits(logits_f32 / kd_temperature, t_probs) * (
+                kd_temperature * kd_temperature
+            )
+            loss = (1.0 - kd_alpha) * loss_hard + kd_alpha * loss_kd
+        else:
+            loss = loss_hard
+
+        if scaler is not None and scaler.is_enabled():
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         bs = images.size(0)
         total_loss += float(loss.item()) * bs
@@ -124,9 +165,13 @@ def main() -> None:
     seed_everything(cfg["seed"])
 
     device = resolve_device(cfg["training"]["device"])
-    print(f"[train] Using device: {device}")
+    use_amp = bool(cfg["training"].get("use_bf16", True))
+    amp_enabled, amp_dtype = resolve_amp(device, use_amp)
+    print(f"[train] Using device: {device} (amp={amp_enabled}, dtype={amp_dtype})")
     if device.type == "xpu":
         print(f"[train] XPU device name: {torch.xpu.get_device_name(0)}")
+    elif device.type == "cuda":
+        print(f"[train] CUDA device name: {torch.cuda.get_device_name(0)}")
 
     model, data_cfg = create_classifier(
         backbone=cfg["model"]["backbone"],
@@ -139,10 +184,20 @@ def main() -> None:
     std = tuple(data_cfg["std"])
     image_size = cfg["data"]["image_size"]
 
+    distill_cfg = cfg.get("distillation") or {}
+    teacher_logits = None
+    kd_alpha = 0.0
+    kd_temp = 3.0
+    if distill_cfg.get("teacher_logits_path"):
+        teacher_logits = load_teacher_logits(distill_cfg["teacher_logits_path"])
+        kd_alpha = float(distill_cfg.get("alpha", 0.5))
+        kd_temp = float(distill_cfg.get("temperature", 3.0))
+        print(f"[train] Distillation enabled: {len(teacher_logits)} teacher logits, alpha={kd_alpha}, T={kd_temp}")
+
     train_tf = build_transforms(image_size, mean, std, is_train=True)
     val_tf = build_transforms(image_size, mean, std, is_train=False)
 
-    train_ds = DafeiyuDataset(cfg["data"]["train_csv"], train_tf, is_train=True)
+    train_ds = DafeiyuDataset(cfg["data"]["train_csv"], train_tf, is_train=True, teacher_logits=teacher_logits)
     val_ds = DafeiyuDataset(cfg["data"]["val_csv"], val_tf, is_train=False)
 
     n_pos = sum(r["label"] for r in train_ds.rows)
@@ -170,8 +225,8 @@ def main() -> None:
 
     model.to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val], device=device))
-    use_bf16 = bool(cfg["training"]["use_bf16"])
     label_smoothing = float(cfg["training"]["label_smoothing"])
+    scaler = torch.amp.GradScaler("cuda", enabled=(amp_enabled and device.type == "cuda" and amp_dtype == torch.float16))
 
     out_dir = Path(cfg["training"]["output_dir"])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -217,13 +272,25 @@ def main() -> None:
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
     for ep in range(1, int(cfg["training"]["stage1_epochs"]) + 1):
-        loss = train_one_epoch(model, train_loader, opt1, criterion, device, use_bf16, label_smoothing)
-        metrics = evaluate_loader(model, val_loader, device, use_bf16)
+        loss = train_one_epoch(
+            model,
+            train_loader,
+            opt1,
+            criterion,
+            device,
+            use_amp,
+            label_smoothing,
+            scaler=scaler,
+            kd_alpha=kd_alpha,
+            kd_temperature=kd_temp,
+        )
+        metrics = evaluate_loader(model, val_loader, device, use_amp)
         save_if_best("stage1", ep, loss, metrics)
 
-    # --- Stage 2: Partial Unfreeze ---
-    print(f"\n=== Stage 2: Unfreezing Last {cfg['training']['unfreeze_last_blocks']} Blocks ===")
-    bb_params, head_params = unfreeze_last_blocks(model, n_blocks=int(cfg["training"]["unfreeze_last_blocks"]))
+    # --- Stage 2: Partial / Full Unfreeze ---
+    unfreeze_n = int(cfg["training"]["unfreeze_last_blocks"])
+    print(f"\n=== Stage 2: Unfreezing {'All Blocks' if unfreeze_n <= 0 else f'Last {unfreeze_n} Blocks'} ===")
+    bb_params, head_params = unfreeze_last_blocks(model, n_blocks=unfreeze_n)
     s2_lr = float(cfg["training"]["stage2_lr"])
     opt2 = torch.optim.AdamW(
         [
@@ -236,9 +303,20 @@ def main() -> None:
     sched2 = torch.optim.lr_scheduler.CosineAnnealingLR(opt2, T_max=s2_epochs, eta_min=s2_lr * 0.05)
 
     for ep in range(1, s2_epochs + 1):
-        loss = train_one_epoch(model, train_loader, opt2, criterion, device, use_bf16, label_smoothing)
+        loss = train_one_epoch(
+            model,
+            train_loader,
+            opt2,
+            criterion,
+            device,
+            use_amp,
+            label_smoothing,
+            scaler=scaler,
+            kd_alpha=kd_alpha,
+            kd_temperature=kd_temp,
+        )
         sched2.step()
-        metrics = evaluate_loader(model, val_loader, device, use_bf16)
+        metrics = evaluate_loader(model, val_loader, device, use_amp)
         save_if_best("stage2", ep, loss, metrics)
 
     elapsed = time.time() - t0

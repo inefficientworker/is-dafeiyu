@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>is-dafeiyu · Browser ONNX Detector</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --card-2: #0b1324;
+      --border: #334155;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --pos: #10b981;
+      --pos-bg: rgba(16, 185, 129, 0.16);
+      --neg: #64748b;
+      --neg-bg: rgba(100, 116, 139, 0.18);
+      --warn: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 28px 20px 48px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 2px 0 0;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--warn);
+    }
+    .dot.ready { background: var(--pos); }
+    .dot.error { background: #ef4444; }
+    .panel {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      margin-bottom: 18px;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+      align-items: end;
+    }
+    label.field-label {
+      display: block;
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    input[type="text"] {
+      flex: 1;
+      min-width: 180px;
+      background: var(--card-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-size: 0.88rem;
+    }
+    button, .file-btn {
+      background: #0284c7;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button.secondary, .file-btn.secondary {
+      background: #334155;
+    }
+    button:hover, .file-btn:hover { filter: brightness(1.1); }
+    input[type="range"] {
+      flex: 1;
+      accent-color: var(--accent);
+    }
+    .thr-val {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      min-width: 44px;
+      text-align: right;
+      color: var(--accent);
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 14px;
+      padding: 32px 20px;
+      text-align: center;
+      background: rgba(15, 23, 42, 0.55);
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.08);
+    }
+    .dropzone p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .summary {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 16px 0 12px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .thumb-wrap {
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: #ffffff;
+      background-image:
+        linear-gradient(45deg, #e2e8f0 25%, transparent 25%),
+        linear-gradient(-45deg, #e2e8f0 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #e2e8f0 75%),
+        linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+      background-size: 16px 16px;
+      background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+      padding: 8px;
+    }
+    .thumb-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .card-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .filename {
+      font-size: 0.85rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.82rem;
+    }
+    .badge {
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 0.76rem;
+      letter-spacing: 0.03em;
+    }
+    .badge.pos { background: var(--pos-bg); color: var(--pos); border: 1px solid rgba(16, 185, 129, 0.4); }
+    .badge.neg { background: var(--neg-bg); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.3); }
+    .bar-bg {
+      height: 6px;
+      border-radius: 999px;
+      background: var(--card-2);
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.2s ease;
+    }
+    .bar-fill.pos { background: var(--pos); }
+    .latency { color: var(--muted); font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>is-dafeiyu · Browser Detector</h1>
+        <p class="subtitle">ONNX Runtime Web (WASM) · Single-file RGBA uint8 [1, 224, 224, 4] pipeline</p>
+      </div>
+      <div class="status-pill">
+        <span id="statusDot" class="dot"></span>
+        <span id="statusText">Initializing model...</span>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="controls">
+        <div>
+          <label class="field-label">Default Model URL</label>
+          <div class="row">
+            <input id="modelUrlInput" type="text" value="../../artifacts/mobilenetv3_large_100/model_browser_fp16.onnx" />
+            <button id="loadUrlBtn" type="button">Load URL</button>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">Or Pick Local .onnx File</label>
+          <div class="row">
+            <label class="file-btn secondary">
+              Choose .onnx
+              <input id="modelFileInput" type="file" accept=".onnx" hidden />
+            </label>
+            <span id="modelInfo" class="subtitle" style="margin:0">No file selected</span>
+          </div>
+        </div>
+        <div>
+          <label class="field-label">High-Precision Threshold</label>
+          <div class="row">
+            <input id="thresholdSlider" type="range" min="0.10" max="0.99" step="0.01" value="0.70" />
+            <span id="thresholdValue" class="thr-val">0.70</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="dropzone" class="dropzone">
+      <strong>Drop images here or click to select multiple images</strong>
+      <p>Supports PNG (transparent &amp; opaque), JPG, WebP, GIF · Resized to 224×224 RGBA in browser</p>
+      <input id="imageInput" type="file" accept="image/*" multiple hidden />
+    </div>
+
+    <div class="summary">
+      <div id="summaryStats">Ready. Select or drop images to classify.</div>
+      <button id="clearBtn" class="secondary" type="button">Clear Results</button>
+    </div>
+
+    <div id="resultsGrid" class="grid"></div>
+  </div>
+
+  <script type="module">
+    import { DafeiyuDetector } from "./detector.js";
+
+    const DEFAULT_THRESHOLD = 0.70;
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const modelUrlInput = document.getElementById("modelUrlInput");
+    const loadUrlBtn = document.getElementById("loadUrlBtn");
+    const modelFileInput = document.getElementById("modelFileInput");
+    const modelInfo = document.getElementById("modelInfo");
+    const thresholdSlider = document.getElementById("thresholdSlider");
+    const thresholdValue = document.getElementById("thresholdValue");
+    const dropzone = document.getElementById("dropzone");
+    const imageInput = document.getElementById("imageInput");
+    const clearBtn = document.getElementById("clearBtn");
+    const summaryStats = document.getElementById("summaryStats");
+    const resultsGrid = document.getElementById("resultsGrid");
+
+    let detector = null;
+    const entries = [];
+
+    thresholdSlider.value = DEFAULT_THRESHOLD.toFixed(2);
+    thresholdValue.textContent = DEFAULT_THRESHOLD.toFixed(2);
+
+    function setStatus(state, text) {
+      statusDot.className = "dot" + (state === "ready" ? " ready" : state === "error" ? " error" : "");
+      statusText.textContent = text;
+    }
+
+    async function loadFromUrl(url) {
+      try {
+        setStatus("loading", `Loading ${url}...`);
+        const t0 = performance.now();
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} for ${url}`);
+        const buf = await resp.arrayBuffer();
+        const mb = (buf.byteLength / (1024 * 1024)).toFixed(2);
+        detector = await DafeiyuDetector.create(new Uint8Array(buf), {
+          threshold: Number(thresholdSlider.value),
+        });
+        const loadMs = (performance.now() - t0).toFixed(0);
+        modelInfo.textContent = `${mb} MB (loaded in ${loadMs} ms)`;
+        setStatus("ready", `Ready · ${mb} MB (WASM)`);
+      } catch (err) {
+        console.error(err);
+        setStatus("error", `Model load failed: ${err.message}`);
+      }
+    }
+
+    async function loadFromFile(file) {
+      try {
+        setStatus("loading", `Loading ${file.name}...`);
+        const t0 = performance.now();
+        const buf = await file.arrayBuffer();
+        const mb = (buf.byteLength / (1024 * 1024)).toFixed(2);
+        detector = await DafeiyuDetector.create(new Uint8Array(buf), {
+          threshold: Number(thresholdSlider.value),
+        });
+        const loadMs = (performance.now() - t0).toFixed(0);
+        modelInfo.textContent = `${file.name} (${mb} MB, ${loadMs} ms)`;
+        setStatus("ready", `Ready · ${file.name} (${mb} MB)`);
+      } catch (err) {
+        console.error(err);
+        setStatus("error", `Model load failed: ${err.message}`);
+      }
+    }
+
+    function renderResults() {
+      const thr = Number(thresholdSlider.value);
+      resultsGrid.innerHTML = "";
+      let posCount = 0;
+      let totalLat = 0;
+
+      for (const item of entries) {
+        const isPos = item.probability >= thr;
+        if (isPos) posCount++;
+        totalLat += item.latencyMs;
+
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="thumb-wrap"><img src="${item.url}" alt="${escapeHtml(item.name)}" /></div>
+          <div class="card-body">
+            <div class="filename" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+            <div class="meta-row">
+              <span class="badge ${isPos ? "pos" : "neg"}">${isPos ? "DAFEIYU" : "NEGATIVE"}</span>
+              <span><strong>${(item.probability * 100).toFixed(2)}%</strong></span>
+            </div>
+            <div class="bar-bg">
+              <div class="bar-fill ${isPos ? "pos" : ""}" style="width: ${(item.probability * 100).toFixed(1)}%"></div>
+            </div>
+            <div class="meta-row latency">
+              <span>Threshold ${thr.toFixed(2)}</span>
+              <span>${item.latencyMs.toFixed(1)} ms</span>
+            </div>
+          </div>
+        `;
+        resultsGrid.appendChild(card);
+      }
+
+      if (entries.length === 0) {
+        summaryStats.textContent = "Ready. Select or drop images to classify.";
+      } else {
+        const avgLat = (totalLat / entries.length).toFixed(1);
+        summaryStats.textContent = `Evaluated ${entries.length} image(s) · ${posCount} Dafeiyu detected · Avg inference ${avgLat} ms/img`;
+      }
+    }
+
+    async function handleFiles(fileList) {
+      if (!detector) {
+        alert("Model is not loaded yet. Please wait or select a .onnx file.");
+        return;
+      }
+      const files = Array.from(fileList).filter((f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name));
+      for (const file of files) {
+        const res = await detector.detect(file, Number(thresholdSlider.value));
+        const url = URL.createObjectURL(file);
+        entries.unshift({
+          name: file.name,
+          url,
+          probability: res.probability,
+          latencyMs: res.latencyMs,
+        });
+        renderResults();
+      }
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    loadUrlBtn.addEventListener("click", () => loadFromUrl(modelUrlInput.value.trim()));
+    modelFileInput.addEventListener("change", (e) => {
+      if (e.target.files?.[0]) loadFromFile(e.target.files[0]);
+    });
+    thresholdSlider.addEventListener("input", () => {
+      thresholdValue.textContent = Number(thresholdSlider.value).toFixed(2);
+      if (detector) detector.threshold = Number(thresholdSlider.value);
+      renderResults();
+    });
+
+    dropzone.addEventListener("click", () => imageInput.click());
+    imageInput.addEventListener("change", (e) => {
+      if (e.target.files?.length) handleFiles(e.target.files);
+      e.target.value = "";
+    });
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
+    });
+    clearBtn.addEventListener("click", () => {
+      for (const item of entries) URL.revokeObjectURL(item.url);
+      entries.length = 0;
+      renderResults();
+    });
+
+    loadFromUrl(modelUrlInput.value.trim());
+  </script>
+</body>
+</html>

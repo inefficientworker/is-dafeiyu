@@ -1,0 +1,936 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>is-dafeiyu · 浏览器离线大肥鱼检测器</title>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b1120;
+      --surface: #131c31;
+      --surface-2: #0f172a;
+      --border: #25324b;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-strong: #0284c7;
+      --pos: #10b981;
+      --pos-bg: rgba(16, 185, 129, 0.16);
+      --neg: #64748b;
+      --neg-bg: rgba(100, 116, 139, 0.18);
+      --warn: #f59e0b;
+      --danger: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .container {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 28px 20px 56px;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 22px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.55rem;
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin: 4px 0 0;
+    }
+    .links {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 13px;
+      border-radius: 999px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.loading { background: var(--warn); }
+    .dot.ready { background: var(--pos); }
+    .dot.error { background: var(--danger); }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin-bottom: 18px;
+    }
+    .panel-header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .panel-title {
+      font-size: 1rem;
+      font-weight: 700;
+      margin: 0;
+    }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+    .toggle-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .model-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 12px;
+    }
+    .model-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .model-card.active {
+      border-color: var(--pos);
+      box-shadow: 0 0 0 1px rgba(16, 185, 129, 0.35);
+    }
+    .model-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .model-name {
+      font-weight: 700;
+      font-size: 0.94rem;
+    }
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .chip {
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.08);
+    }
+    .chip.rec {
+      color: #7dd3fc;
+      border-color: rgba(56, 189, 248, 0.45);
+      background: rgba(56, 189, 248, 0.12);
+    }
+    .chip.cached {
+      color: #6ee7b7;
+      border-color: rgba(16, 185, 129, 0.45);
+      background: rgba(16, 185, 129, 0.12);
+    }
+    .chip.active-chip {
+      color: #10b981;
+      border-color: #10b981;
+      background: rgba(16, 185, 129, 0.2);
+    }
+    .model-desc {
+      font-size: 0.81rem;
+      color: var(--muted);
+      margin: 0;
+    }
+    .model-metrics {
+      font-size: 0.78rem;
+      color: #cbd5e1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      font-variant-numeric: tabular-nums;
+    }
+    .progress-wrap {
+      display: none;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .progress-wrap.visible { display: flex; }
+    .progress-bar-bg {
+      height: 7px;
+      border-radius: 999px;
+      background: #1e293b;
+      overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #38bdf8, #10b981);
+      transition: width 0.1s linear;
+    }
+    .progress-text {
+      font-size: 0.75rem;
+      color: var(--accent);
+      font-variant-numeric: tabular-nums;
+    }
+    .model-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+    button, .file-btn {
+      background: var(--accent-strong);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 7px 12px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: opacity 0.15s ease, background 0.15s ease;
+    }
+    button:hover:not(:disabled), .file-btn:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    button.secondary, .file-btn.secondary {
+      background: #1e293b;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    button.danger {
+      background: rgba(239, 68, 68, 0.14);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+    }
+    .grow { flex: 1; }
+
+    .controls-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .thr-control {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .thr-val {
+      font-variant-numeric: tabular-nums;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 42px;
+    }
+
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 14px;
+      padding: 30px 20px;
+      text-align: center;
+      cursor: pointer;
+      background: rgba(19, 28, 49, 0.55);
+      transition: border-color 0.15s ease, background 0.15s ease;
+      margin-bottom: 18px;
+    }
+    .dropzone.dragover {
+      border-color: var(--accent);
+      background: rgba(56, 189, 248, 0.1);
+    }
+    .dropzone.disabled {
+      opacity: 0.6;
+    }
+    .dropzone strong {
+      display: block;
+      font-size: 1rem;
+      margin-bottom: 6px;
+    }
+    .dropzone p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.86rem;
+    }
+
+    .summary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .thumb-wrap {
+      height: 175px;
+      background:
+        linear-gradient(45deg, #162033 25%, transparent 25%),
+        linear-gradient(-45deg, #162033 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #162033 75%),
+        linear-gradient(-45deg, transparent 75%, #162033 75%);
+      background-size: 18px 18px;
+      background-position: 0 0, 0 9px, 9px -9px, -9px 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    .thumb-wrap img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .card-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .filename {
+      font-size: 0.82rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .meta-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 0.85rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .badge {
+      font-size: 0.74rem;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .badge.pos {
+      color: #6ee7b7;
+      background: var(--pos-bg);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+    }
+    .badge.neg {
+      color: #cbd5e1;
+      background: var(--neg-bg);
+      border: 1px solid rgba(100, 116, 139, 0.35);
+    }
+    .bar-bg {
+      height: 6px;
+      border-radius: 999px;
+      background: #0f172a;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background: var(--neg);
+    }
+    .bar-fill.pos { background: var(--pos); }
+    .latency {
+      font-size: 0.77rem;
+      color: var(--muted);
+    }
+    footer {
+      margin-top: 32px;
+      text-align: center;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>is-dafeiyu · 浏览器离线大肥鱼检测器</h1>
+        <p class="subtitle">
+          基于 ONNX Runtime Web (WASM) 本地推理 · 图片不会上传服务器 · 模型按需点击下载并持久化缓存至浏览器
+        </p>
+      </div>
+      <div class="links">
+        <a href="https://huggingface.co/inefficentworker/is-dafeiyu" target="_blank" rel="noopener">Hugging Face 模型库</a>
+        <a href="https://github.com/inefficientworker/is-dafeiyu" target="_blank" rel="noopener">GitHub 仓库</a>
+        <div class="status-pill">
+          <span id="statusDot" class="dot"></span>
+          <span id="statusText">尚未加载模型（请先点击下方下载或加载）</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2 class="panel-title">1. 选择并下载模型（点击按钮才下载，自动缓存到浏览器 Cache Storage）</h2>
+        <div class="toolbar">
+          <label class="toggle-label" title="国内访问 huggingface.co 较慢时可勾选镜像源">
+            <input id="mirrorToggle" type="checkbox" />
+            <span>使用 hf-mirror.com 镜像</span>
+          </label>
+          <span id="cacheSummary">缓存检查中...</span>
+          <button id="clearAllCacheBtn" class="danger" type="button" style="display:none">清空全部缓存</button>
+          <label class="file-btn secondary">
+            选择本地 .onnx
+            <input id="localModelInput" type="file" accept=".onnx" hidden />
+          </label>
+        </div>
+      </div>
+      <div id="modelGrid" class="model-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="controls-row">
+        <div class="thr-control">
+          <strong>2. 判定阈值（高精度校准）：</strong>
+          <input id="thresholdSlider" type="range" min="0.10" max="0.99" step="0.01" value="0.70" />
+          <span id="thresholdValue" class="thr-val">0.70</span>
+          <span id="thresholdHint" class="subtitle" style="margin:0">（切换模型时自动应用该模型的推荐校准阈值）</span>
+        </div>
+      </div>
+    </section>
+
+    <div id="dropzone" class="dropzone disabled">
+      <strong>3. 拖拽图片到这里、点击多选，或直接 Ctrl+V 粘贴剪贴板图片</strong>
+      <p>支持 PNG（含透明通道）、JPG、WebP、GIF · 纯浏览器本地 WASM 推理，图片不离开你的设备</p>
+      <input id="imageInput" type="file" accept="image/*" multiple hidden />
+    </div>
+
+    <div class="summary">
+      <div id="summaryStats">请先在上方点击「下载并加载」一个模型，再选择图片进行测试。</div>
+      <button id="clearResultsBtn" class="secondary" type="button">清空测试结果</button>
+    </div>
+
+    <div id="resultsGrid" class="grid"></div>
+
+    <footer>
+      模型托管于 <a href="https://huggingface.co/inefficentworker/is-dafeiyu" target="_blank" rel="noopener">inefficentworker/is-dafeiyu</a> · 蒸馏自 DINOv2-Base Teacher · 仅限非商业研究与学习使用
+    </footer>
+  </div>
+
+  <script type="module">
+    import { DafeiyuDetector } from "./detector.js";
+
+    const HF_REPO = "inefficentworker/is-dafeiyu";
+    const CACHE_NAME = "is-dafeiyu-models-v1";
+
+    const MODELS = [
+      {
+        id: "mobilenetv3_large_100_fp16",
+        name: "MobileNetV3-Large (FP16)",
+        badge: "推荐 · 极速零误报",
+        recommended: true,
+        path: "onnx/mobilenetv3_large_100_fp16.onnx",
+        sizeMB: 8.05,
+        threshold: 0.70,
+        metrics: "P=100% · R=100% · 0 FP / 0 FN · ~3.1ms",
+        desc: "最均衡的首选模型：8.05 MB，CPU/WASM 推理极快，测试集 0 误报且 0 漏报。",
+      },
+      {
+        id: "convnext_atto_int8_static",
+        name: "ConvNeXt-Atto (INT8 静态量化)",
+        badge: "极致超小 3.6 MB",
+        recommended: true,
+        path: "onnx/convnext_atto_int8_static.onnx",
+        sizeMB: 3.59,
+        threshold: 0.50,
+        metrics: "P=100% · R=97.3% · 0 FP / 1 FN · ~5.9ms",
+        desc: "仅 3.59 MB（比原版小 91×），依然保持 0 误报，适合移动端或弱网环境。",
+      },
+      {
+        id: "convnext_atto_fp16",
+        name: "ConvNeXt-Atto (FP16)",
+        badge: "轻量高精度",
+        recommended: false,
+        path: "onnx/convnext_atto_fp16.onnx",
+        sizeMB: 6.52,
+        threshold: 0.50,
+        metrics: "P=100% · R=97.3% · PR-AUC=1.000 · ~7.7ms",
+        desc: "6.52 MB 半精度权重，无 INT8 量化误差，PR-AUC 保持 1.0000。",
+      },
+      {
+        id: "mobilenetv3_large_100_fp32",
+        name: "MobileNetV3-Large (FP32)",
+        badge: "完整精度",
+        recommended: false,
+        path: "onnx/mobilenetv3_large_100_fp32.onnx",
+        sizeMB: 16.03,
+        threshold: 0.70,
+        metrics: "P=100% · R=100% · 0 FP / 0 FN · ~3.0ms",
+        desc: "16.03 MB 原始 FP32 权重，与 PyTorch 数值误差 < 4e-8。",
+      },
+      {
+        id: "convnext_atto_fp32",
+        name: "ConvNeXt-Atto (FP32)",
+        badge: "完整精度",
+        recommended: false,
+        path: "onnx/convnext_atto_fp32.onnx",
+        sizeMB: 12.93,
+        threshold: 0.50,
+        metrics: "P=100% · R=97.3% · PR-AUC=1.000 · ~5.6ms",
+        desc: "12.93 MB ConvNeXt-Atto 原始 FP32 权重。",
+      },
+    ];
+
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const modelGrid = document.getElementById("modelGrid");
+    const mirrorToggle = document.getElementById("mirrorToggle");
+    const cacheSummary = document.getElementById("cacheSummary");
+    const clearAllCacheBtn = document.getElementById("clearAllCacheBtn");
+    const localModelInput = document.getElementById("localModelInput");
+    const thresholdSlider = document.getElementById("thresholdSlider");
+    const thresholdValue = document.getElementById("thresholdValue");
+    const dropzone = document.getElementById("dropzone");
+    const imageInput = document.getElementById("imageInput");
+    const clearResultsBtn = document.getElementById("clearResultsBtn");
+    const summaryStats = document.getElementById("summaryStats");
+    const resultsGrid = document.getElementById("resultsGrid");
+
+    let detector = null;
+    let activeModelId = null;
+    let busyModelId = null;
+    const cachedSet = new Set();
+    const entries = [];
+
+    const hasCacheApi = typeof caches !== "undefined";
+
+    function canonicalCacheKey(model) {
+      return `https://huggingface.co/${HF_REPO}/resolve/main/${model.path}`;
+    }
+
+    function downloadUrlFor(model) {
+      const host = mirrorToggle.checked ? "https://hf-mirror.com" : "https://huggingface.co";
+      return `${host}/${HF_REPO}/resolve/main/${model.path}`;
+    }
+
+    function setStatus(state, text) {
+      statusDot.className = "dot" + (state ? " " + state : "");
+      statusText.textContent = text;
+    }
+
+    async function refreshCacheState() {
+      cachedSet.clear();
+      if (!hasCacheApi) {
+        cacheSummary.textContent = "当前环境不支持 Cache Storage（需 HTTPS 或 localhost）";
+        clearAllCacheBtn.style.display = "none";
+        renderModelCards();
+        return;
+      }
+      const cache = await caches.open(CACHE_NAME);
+      let cachedBytes = 0;
+      for (const m of MODELS) {
+        const match = await cache.match(canonicalCacheKey(m));
+        if (match) {
+          cachedSet.add(m.id);
+          const len = Number(match.headers.get("content-length") || 0);
+          cachedBytes += len > 0 ? len : m.sizeMB * 1024 * 1024;
+        }
+      }
+      if (cachedSet.size === 0) {
+        cacheSummary.textContent = "本地已缓存 0 个模型";
+        clearAllCacheBtn.style.display = "none";
+      } else {
+        const mb = (cachedBytes / (1024 * 1024)).toFixed(2);
+        cacheSummary.textContent = `本地已缓存 ${cachedSet.size} 个模型（约 ${mb} MB）`;
+        clearAllCacheBtn.style.display = "inline-flex";
+      }
+      renderModelCards();
+    }
+
+    async function downloadAndCacheModel(model, onProgress) {
+      const url = downloadUrlFor(model);
+      const resp = await fetch(url, { mode: "cors" });
+      if (!resp.ok) {
+        throw new Error(`HTTP ${resp.status} (${url})`);
+      }
+
+      const contentLength = Number(resp.headers.get("content-length") || 0);
+      const totalBytes = contentLength > 0 ? contentLength : Math.round(model.sizeMB * 1024 * 1024);
+
+      let bytes;
+      if (resp.body && typeof resp.body.getReader === "function") {
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          received += value.byteLength;
+          onProgress(received, totalBytes);
+        }
+        bytes = new Uint8Array(received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+      } else {
+        const buf = await resp.arrayBuffer();
+        bytes = new Uint8Array(buf);
+        onProgress(bytes.byteLength, bytes.byteLength);
+      }
+
+      if (hasCacheApi) {
+        const cache = await caches.open(CACHE_NAME);
+        const cacheResp = new Response(bytes, {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Length": String(bytes.byteLength),
+          },
+        });
+        await cache.put(canonicalCacheKey(model), cacheResp);
+      }
+      return bytes;
+    }
+
+    async function loadModelFromCache(model) {
+      if (!hasCacheApi) return null;
+      const cache = await caches.open(CACHE_NAME);
+      const match = await cache.match(canonicalCacheKey(model));
+      if (!match) return null;
+      const buf = await match.arrayBuffer();
+      return new Uint8Array(buf);
+    }
+
+    async function activateModel(model) {
+      if (busyModelId) return;
+      busyModelId = model.id;
+      renderModelCards();
+
+      const progressWrap = document.getElementById(`prog-wrap-${model.id}`);
+      const progressFill = document.getElementById(`prog-fill-${model.id}`);
+      const progressText = document.getElementById(`prog-text-${model.id}`);
+
+      try {
+        const t0 = performance.now();
+        let bytes = await loadModelFromCache(model);
+        let fromCache = true;
+
+        if (!bytes) {
+          fromCache = false;
+          setStatus("loading", `正在下载 ${model.name} (${model.sizeMB} MB)...`);
+          if (progressWrap) progressWrap.classList.add("visible");
+          bytes = await downloadAndCacheModel(model, (received, total) => {
+            const pct = Math.min(100, (received / Math.max(1, total)) * 100);
+            if (progressFill) progressFill.style.width = `${pct.toFixed(1)}%`;
+            if (progressText) {
+              const rMB = (received / (1024 * 1024)).toFixed(2);
+              const tMB = (total / (1024 * 1024)).toFixed(2);
+              progressText.textContent = `下载中 ${rMB} / ${tMB} MB (${pct.toFixed(0)}%)`;
+            }
+          });
+        } else {
+          setStatus("loading", `正在从浏览器缓存加载 ${model.name}...`);
+        }
+
+        if (progressText) progressText.textContent = "正在初始化 WASM 推理引擎...";
+        if (detector) {
+          await detector.dispose();
+          detector = null;
+        }
+
+        thresholdSlider.value = model.threshold.toFixed(2);
+        thresholdValue.textContent = model.threshold.toFixed(2);
+
+        detector = await DafeiyuDetector.create(bytes, {
+          threshold: model.threshold,
+        });
+        activeModelId = model.id;
+        dropzone.classList.remove("disabled");
+
+        const elapsedMs = (performance.now() - t0).toFixed(0);
+        const srcLabel = fromCache ? "来自本地缓存" : "已下载并缓存";
+        setStatus("ready", `就绪 · ${model.name}（${srcLabel}，耗时 ${elapsedMs} ms）`);
+        if (entries.length === 0) {
+          summaryStats.textContent = `模型「${model.name}」已就绪，拖拽、选择或 Ctrl+V 粘贴图片开始检测。`;
+        }
+        await refreshCacheState();
+      } catch (err) {
+        console.error(err);
+        setStatus("error", `加载失败：${err.message}`);
+      } finally {
+        busyModelId = null;
+        renderModelCards();
+      }
+    }
+
+    async function deleteModelCache(model) {
+      if (!hasCacheApi) return;
+      const cache = await caches.open(CACHE_NAME);
+      await cache.delete(canonicalCacheKey(model));
+      await refreshCacheState();
+    }
+
+    function renderModelCards() {
+      modelGrid.innerHTML = "";
+      for (const m of MODELS) {
+        const isCached = cachedSet.has(m.id);
+        const isActive = activeModelId === m.id;
+        const isBusy = busyModelId === m.id;
+
+        const card = document.createElement("div");
+        card.className = "model-card" + (isActive ? " active" : "");
+
+        const chips = [];
+        chips.push(`<span class="chip ${m.recommended ? "rec" : ""}">${m.badge}</span>`);
+        if (isActive) {
+          chips.push(`<span class="chip active-chip">当前使用中</span>`);
+        } else if (isCached) {
+          chips.push(`<span class="chip cached">已缓存</span>`);
+        } else {
+          chips.push(`<span class="chip">未下载</span>`);
+        }
+
+        const primaryLabel = isBusy
+          ? "处理中..."
+          : isActive
+            ? "重新加载"
+            : isCached
+              ? "从缓存加载"
+              : `下载并加载 (${m.sizeMB} MB)`;
+
+        card.innerHTML = `
+          <div class="model-top">
+            <div class="model-name">${m.name}</div>
+          </div>
+          <div class="tag-row">${chips.join("")}</div>
+          <p class="model-desc">${m.desc}</p>
+          <div class="model-metrics">
+            <span>大小: <strong>${m.sizeMB} MB</strong></span>
+            <span>阈值: <strong>${m.threshold.toFixed(2)}</strong></span>
+            <span>${m.metrics}</span>
+          </div>
+          <div id="prog-wrap-${m.id}" class="progress-wrap ${isBusy ? "visible" : ""}">
+            <div class="progress-bar-bg"><div id="prog-fill-${m.id}" class="progress-bar-fill"></div></div>
+            <div id="prog-text-${m.id}" class="progress-text">准备中...</div>
+          </div>
+          <div class="model-actions">
+            <button class="grow ${isCached ? "secondary" : ""}" data-act="load" data-id="${m.id}" ${busyModelId ? "disabled" : ""}>
+              ${primaryLabel}
+            </button>
+            ${isCached ? `<button class="danger" data-act="delete" data-id="${m.id}" ${busyModelId ? "disabled" : ""}>删缓存</button>` : ""}
+          </div>
+        `;
+        modelGrid.appendChild(card);
+      }
+
+      modelGrid.querySelectorAll("button[data-act]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const model = MODELS.find((x) => x.id === btn.dataset.id);
+          if (!model) return;
+          if (btn.dataset.act === "load") {
+            await activateModel(model);
+          } else if (btn.dataset.act === "delete") {
+            await deleteModelCache(model);
+          }
+        });
+      });
+    }
+
+    function renderResults() {
+      const thr = Number(thresholdSlider.value);
+      resultsGrid.innerHTML = "";
+      let posCount = 0;
+      let totalLat = 0;
+
+      for (const item of entries) {
+        const isPos = item.probability >= thr;
+        if (isPos) posCount++;
+        totalLat += item.latencyMs;
+
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML = `
+          <div class="thumb-wrap"><img src="${item.url}" alt="${escapeHtml(item.name)}" /></div>
+          <div class="card-body">
+            <div class="filename" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</div>
+            <div class="meta-row">
+              <span class="badge ${isPos ? "pos" : "neg"}">${isPos ? "是大肥鱼" : "非大肥鱼"}</span>
+              <span><strong>${(item.probability * 100).toFixed(2)}%</strong></span>
+            </div>
+            <div class="bar-bg">
+              <div class="bar-fill ${isPos ? "pos" : ""}" style="width: ${(item.probability * 100).toFixed(1)}%"></div>
+            </div>
+            <div class="meta-row latency">
+              <span>${escapeHtml(item.modelName)} · 阈值 ${thr.toFixed(2)}</span>
+              <span>${item.latencyMs.toFixed(1)} ms</span>
+            </div>
+          </div>
+        `;
+        resultsGrid.appendChild(card);
+      }
+
+      if (entries.length === 0) {
+        summaryStats.textContent = detector
+          ? "模型已就绪，拖拽、选择或 Ctrl+V 粘贴图片开始检测。"
+          : "请先在上方点击「下载并加载」一个模型，再选择图片进行测试。";
+      } else {
+        const avgLat = (totalLat / entries.length).toFixed(1);
+        summaryStats.textContent = `已检测 ${entries.length} 张图片 · 检出 ${posCount} 张大肥鱼 · 平均耗时 ${avgLat} ms/张`;
+      }
+    }
+
+    async function handleFiles(fileList) {
+      if (!detector) {
+        alert("请先点击上方某个模型的「下载并加载」按钮（或选择本地 .onnx 文件）！");
+        return;
+      }
+      const files = Array.from(fileList).filter(
+        (f) => f.type.startsWith("image/") || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name)
+      );
+      const currentModel = MODELS.find((m) => m.id === activeModelId);
+      const modelLabel = currentModel ? currentModel.name : "本地模型";
+
+      for (const file of files) {
+        const res = await detector.detect(file, Number(thresholdSlider.value));
+        const url = URL.createObjectURL(file);
+        entries.unshift({
+          name: file.name || `paste-${Date.now()}.png`,
+          url,
+          probability: res.probability,
+          latencyMs: res.latencyMs,
+          modelName: modelLabel,
+        });
+        renderResults();
+      }
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+      }[c]));
+    }
+
+    localModelInput.addEventListener("change", async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      try {
+        setStatus("loading", `正在加载本地文件 ${file.name}...`);
+        const t0 = performance.now();
+        const buf = await file.arrayBuffer();
+        const mb = (buf.byteLength / (1024 * 1024)).toFixed(2);
+        if (detector) await detector.dispose();
+        detector = await DafeiyuDetector.create(new Uint8Array(buf), {
+          threshold: Number(thresholdSlider.value),
+        });
+        activeModelId = "__local__";
+        dropzone.classList.remove("disabled");
+        setStatus("ready", `就绪 · 本地文件 ${file.name} (${mb} MB，${(performance.now() - t0).toFixed(0)} ms)`);
+        renderModelCards();
+      } catch (err) {
+        console.error(err);
+        setStatus("error", `本地加载失败：${err.message}`);
+      }
+      e.target.value = "";
+    });
+
+    clearAllCacheBtn.addEventListener("click", async () => {
+      if (!hasCacheApi) return;
+      await caches.delete(CACHE_NAME);
+      await refreshCacheState();
+    });
+
+    thresholdSlider.addEventListener("input", () => {
+      thresholdValue.textContent = Number(thresholdSlider.value).toFixed(2);
+      if (detector) detector.threshold = Number(thresholdSlider.value);
+      renderResults();
+    });
+
+    dropzone.addEventListener("click", () => imageInput.click());
+    imageInput.addEventListener("change", (e) => {
+      if (e.target.files?.length) handleFiles(e.target.files);
+      e.target.value = "";
+    });
+    dropzone.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+    dropzone.addEventListener("dragleave", () => dropzone.classList.remove("dragover"));
+    dropzone.addEventListener("drop", (e) => {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+      if (e.dataTransfer?.files?.length) handleFiles(e.dataTransfer.files);
+    });
+    document.addEventListener("paste", (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files = [];
+      for (const item of items) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length) handleFiles(files);
+    });
+    clearResultsBtn.addEventListener("click", () => {
+      for (const item of entries) URL.revokeObjectURL(item.url);
+      entries.length = 0;
+      renderResults();
+    });
+
+    // Startup: ONLY check cache status, NEVER auto-download any model.
+    refreshCacheState();
+  </script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+seed: 42
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  splits_dir: data/splits
+  train_csv: data/splits/train.csv
+  val_csv: data/splits/val.csv
+  test_csv: data/splits/test.csv
+  image_size: 224
+  num_workers: 4
+
+model:
+  backbone: mobilenetv4_conv_medium.e500_r224_in1k
+  pretrained: true
+  drop_rate: 0.2
+  drop_path_rate: 0.1
+
+distillation:
+  teacher_logits_path: artifacts/dinov2_base/teacher_logits.json
+  alpha: 0.5
+  temperature: 3.0
+
+training:
+  device: auto
+  use_bf16: true
+  batch_size: 32
+  weight_decay: 0.03
+  label_smoothing: 0.02
+  stage1_epochs: 6
+  stage1_lr: 2.0e-3
+  stage2_epochs: 25
+  stage2_lr: 2.0e-4
+  unfreeze_last_blocks: 3
+  pos_weight_scale: 1.0
+  output_dir: artifacts/mobilenetv4_conv_medium
+
+evaluation:
+  target_precision: 0.98
+  f_beta: 0.5

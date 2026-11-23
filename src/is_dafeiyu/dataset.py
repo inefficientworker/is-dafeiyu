@@ -86,7 +86,13 @@ def build_transforms(
 
 
 class DafeiyuDataset(Dataset):
-    def __init__(self, csv_path: str | Path, transform: transforms.Compose, is_train: bool = False) -> None:
+    def __init__(
+        self,
+        csv_path: str | Path,
+        transform: transforms.Compose,
+        is_train: bool = False,
+        teacher_logits: dict[str, float] | None = None,
+    ) -> None:
         self.rows: list[dict] = []
         with Path(csv_path).open("r", encoding="utf-8") as f:
             for row in csv.DictReader(f):
@@ -94,6 +100,7 @@ class DafeiyuDataset(Dataset):
                 self.rows.append(row)
         self.transform = transform
         self.is_train = is_train
+        self.teacher_logits = teacher_logits
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -102,10 +109,13 @@ class DafeiyuDataset(Dataset):
         row = self.rows[idx]
         img = load_rgb_image(row["path"], random_bg=self.is_train)
         tensor = self.transform(img)
-        return {
+        item = {
             "image": tensor,
             "label": float(row["label"]),
             "category": row["category"],
             "subcategory": row["subcategory"],
             "path": row["path"],
         }
+        if self.teacher_logits is not None:
+            item["teacher_logit"] = float(self.teacher_logits[row["path"]])
+        return item

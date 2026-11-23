@@ -6,7 +6,10 @@ tags:
   - image-classification
   - binary-classification
   - dinov2
+  - mobilenetv3
+  - convnext
   - onnx
+  - onnxruntime-web
   - anime
   - dafeiyu
   - deepseek-mascot
@@ -16,12 +19,25 @@ tags:
 
 - **GitHub**：<https://github.com/inefficientworker/is-dafeiyu>
 - **Hugging Face**：<https://huggingface.co/inefficentworker/is-dafeiyu>
+- **浏览器在线测试（GitHub Pages）**：<https://inefficientworker.github.io/is-dafeiyu/>
 
-用于检测图片中是否包含 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）** 的二分类图像识别模型，支持静态图片、GIF/WebP 动图及目录批量推理，覆盖合影及 Q 版/Logo 变体。
+用于检测图片中是否包含 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）** 的二分类图像识别模型，支持静态图片、GIF/WebP 动图、目录批量推理以及**浏览器端 WASM 离线推理**，覆盖合影及 Q 版/Logo 变体。
 
-模型基于 `vit_base_patch14_reg4_dinov2.lvd142m`（`timm`）进行两阶段微调，并在验证集上完成温度缩放（Temperature Scaling）与高精度阈值校准，针对三类困难负样本（蓝发二次元角色、真实/插画鱼类鲸类、文本/聊天表情包）进行了低误报优化。
+教师模型基于 `vit_base_patch14_reg4_dinov2.lvd142m`（`timm`）进行两阶段微调，并在验证集上完成温度缩放（Temperature Scaling）与高精度阈值校准，针对三类困难负样本（蓝发二次元角色、真实/插画鱼类鲸类、文本/聊天表情包）进行了低误报优化。随后通过知识蒸馏产出多个轻量级单文件 ONNX 学生模型，体积最小仅 **3.59 MB**。
 
-## 模型产物（`artifacts/dinov2_base/`）
+## 浏览器专用轻量 ONNX 模型（`onnx/`）
+
+所有浏览器模型均为**单文件 `.onnx`**（无 `.onnx.data`），并已将 **RGBA `uint8 [batch, 224, 224, 4]` 白底透明合成 + `/255` + ImageNet `mean/std` 归一化 + `NHWC → NCHW` + 温度缩放 Sigmoid** 全部烘焙进计算图，浏览器端直接传入 Canvas `ImageData` 即可推理：
+
+| 模型 | 文件 | 体积 | 推荐阈值 | CPU 单图耗时 | Precision | Recall | F1 | PR-AUC | FP / FN |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **MobileNetV3-Large (FP16)** *(推荐)* | `onnx/mobilenetv3_large_100_fp16.onnx` | **8.05 MB** | `0.70` | **3.1 ms** | **1.0000** | **1.0000** | **1.0000** | **1.0000** | **0 / 0** |
+| **ConvNeXt-Atto (INT8 静态量化)** *(极致超小)* | `onnx/convnext_atto_int8_static.onnx` | **3.59 MB** | `0.50` | 5.9 ms | **1.0000** | 0.9730 | 0.9863 | 0.9993 | **0 / 1** |
+| ConvNeXt-Atto (FP16) | `onnx/convnext_atto_fp16.onnx` | 6.52 MB | `0.50` | 7.7 ms | 1.0000 | 0.9730 | 0.9863 | 1.0000 | 0 / 1 |
+| ConvNeXt-Atto (FP32) | `onnx/convnext_atto_fp32.onnx` | 12.93 MB | `0.50` | 5.6 ms | 1.0000 | 0.9730 | 0.9863 | 1.0000 | 0 / 1 |
+| MobileNetV3-Large (FP32) | `onnx/mobilenetv3_large_100_fp32.onnx` | 16.03 MB | `0.70` | 3.0 ms | 1.0000 | 1.0000 | 1.0000 | 1.0000 | 0 / 0 |
+
+## 教师模型产物（`artifacts/dinov2_base/`）
 
 | 文件 | 说明 |
 | :--- | :--- |
@@ -31,7 +47,7 @@ tags:
 | `test_report.json` | 测试集评估报告 |
 | `history.json` | 第一、二阶段训练指标记录 |
 
-## 测试集评估结果（`n = 251`）
+### 教师模型测试集评估结果（`n = 251`）
 
 | 指标 | 数值 |
 | :--- | :--- |

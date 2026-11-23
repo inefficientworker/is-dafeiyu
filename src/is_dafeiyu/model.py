@@ -17,6 +17,18 @@ def resolve_device(device_cfg: str = "auto") -> torch.device:
     return torch.device(device_cfg)
 
 
+def resolve_amp(device: torch.device, use_amp: bool = True) -> tuple[bool, torch.dtype]:
+    """Resolve whether AMP is enabled and which dtype (bfloat16 vs float16) the device natively supports."""
+    if not use_amp or device.type not in ("xpu", "cuda"):
+        return False, torch.float32
+    if device.type == "xpu":
+        return True, torch.bfloat16
+    major, _ = torch.cuda.get_device_capability(device)
+    if major >= 8 and torch.cuda.is_bf16_supported():
+        return True, torch.bfloat16
+    return True, torch.float16
+
+
 def create_classifier(
     backbone: str,
     pretrained: bool = True,
@@ -32,7 +44,14 @@ def create_classifier(
     }
     if img_size is not None:
         kwargs["img_size"] = img_size
-    model = timm.create_model(backbone, **kwargs)
+    try:
+        model = timm.create_model(backbone, **kwargs)
+    except TypeError as exc:
+        if "img_size" in kwargs and "img_size" in str(exc):
+            kwargs.pop("img_size")
+            model = timm.create_model(backbone, **kwargs)
+        else:
+            raise
     data_cfg = timm.data.resolve_model_data_config(model)
     return model, data_cfg
 
@@ -54,34 +73,39 @@ def freeze_backbone(model: nn.Module) -> None:
 
 
 def unfreeze_last_blocks(model: nn.Module, n_blocks: int = 3) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
-    """Unfreeze the classification head, final norm, and last n_blocks of the backbone.
+    """Unfreeze the classification head, final norm/conv_head, and last n_blocks/stages of the backbone.
 
+    If n_blocks <= 0, all backbone parameters are unfrozen.
     Returns (backbone_params, head_params) for differential learning rates.
     """
-    freeze_backbone(model)
     head_ids = {id(p) for p in _get_head_params(model)}
-
-    # Unfreeze final norm layers
-    for norm_attr in ("norm", "fc_norm"):
-        norm_mod = getattr(model, norm_attr, None)
-        if isinstance(norm_mod, nn.Module):
-            for p in norm_mod.parameters():
-                p.requires_grad = True
-
-    # Unfreeze last n transformer blocks (ViT/DINOv2/EVA) or last stage (ConvNeXt)
-    if hasattr(model, "blocks"):
-        blocks = list(model.blocks)
-        for blk in blocks[-n_blocks:]:
-            for p in blk.parameters():
-                p.requires_grad = True
-    elif hasattr(model, "stages"):
-        stages = list(model.stages)
-        for stg in stages[-1:]:
-            for p in stg.parameters():
-                p.requires_grad = True
-    else:
+    if n_blocks <= 0:
         for p in model.parameters():
             p.requires_grad = True
+    else:
+        freeze_backbone(model)
+
+        # Unfreeze final norm / head-projection layers (ViT norm, MobileNet conv_head/norm_head, ConvNeXt head.norm)
+        for tail_attr in ("norm", "fc_norm", "norm_pre", "conv_head", "norm_head", "head"):
+            tail_mod = getattr(model, tail_attr, None)
+            if isinstance(tail_mod, nn.Module):
+                for p in tail_mod.parameters():
+                    p.requires_grad = True
+
+        # Unfreeze last n transformer/mobilenet blocks or ConvNeXt stages
+        if hasattr(model, "blocks"):
+            blocks = list(model.blocks)
+            for blk in blocks[-n_blocks:]:
+                for p in blk.parameters():
+                    p.requires_grad = True
+        elif hasattr(model, "stages"):
+            stages = list(model.stages)
+            for stg in stages[-n_blocks:]:
+                for p in stg.parameters():
+                    p.requires_grad = True
+        else:
+            for p in model.parameters():
+                p.requires_grad = True
 
     backbone_params = [p for p in model.parameters() if p.requires_grad and id(p) not in head_ids]
     head_params = [p for p in model.parameters() if p.requires_grad and id(p) in head_ids]

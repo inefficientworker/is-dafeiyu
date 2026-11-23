@@ -24,17 +24,17 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from is_dafeiyu.dataset import DafeiyuDataset, build_transforms
-from is_dafeiyu.model import create_classifier, resolve_device
+from is_dafeiyu.model import create_classifier, resolve_amp, resolve_device
 
 
 @torch.no_grad()
-def collect_logits(model: nn.Module, loader: DataLoader, device: torch.device, use_bf16: bool) -> dict:
+def collect_logits(model: nn.Module, loader: DataLoader, device: torch.device, use_amp: bool) -> dict:
     model.eval()
     logits_list, labels_list, cats, subcats, paths = [], [], [], [], []
-    amp_enabled = use_bf16 and device.type in ("xpu", "cuda")
+    amp_enabled, amp_dtype = resolve_amp(device, use_amp)
     for batch in loader:
         images = batch["image"].to(device, non_blocking=True)
-        with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=amp_enabled):
+        with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=amp_enabled):
             logits = model(images).squeeze(-1)
         logits_list.append(logits.float().cpu().numpy())
         labels_list.append(batch["label"].numpy())
@@ -194,8 +194,9 @@ def main() -> None:
     val_ds = DafeiyuDataset(cfg["data"]["val_csv"], eval_tf, is_train=False)
     test_ds = DafeiyuDataset(cfg["data"]["test_csv"], eval_tf, is_train=False)
 
-    val_loader = DataLoader(val_ds, batch_size=cfg["training"]["batch_size"], shuffle=False, num_workers=4)
-    test_loader = DataLoader(test_ds, batch_size=cfg["training"]["batch_size"], shuffle=False, num_workers=4)
+    num_workers = int(cfg["data"].get("num_workers", 4))
+    val_loader = DataLoader(val_ds, batch_size=cfg["training"]["batch_size"], shuffle=False, num_workers=num_workers)
+    test_loader = DataLoader(test_ds, batch_size=cfg["training"]["batch_size"], shuffle=False, num_workers=num_workers)
 
     use_bf16 = bool(cfg["training"]["use_bf16"])
     val_data = collect_logits(model, val_loader, device, use_bf16)
@@ -212,6 +213,8 @@ def main() -> None:
 
     val_report = compute_detailed_metrics(val_data, temp, thr)
     test_report = compute_detailed_metrics(test_data, temp, thr)
+    test_report["backbone"] = ckpt["backbone"]
+    test_report["num_params"] = int(sum(p.numel() for p in model.parameters()))
 
     calib = {
         "temperature": temp,
