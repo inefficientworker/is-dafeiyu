@@ -14,6 +14,9 @@ tags:
 
 # is-dafeiyu
 
+- **GitHub**：<https://github.com/inefficientworker/is-dafeiyu>
+- **Hugging Face**：<https://huggingface.co/inefficentworker/is-dafeiyu>
+
 用于检测图片中是否包含 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）** 的二分类图像识别模型，支持静态图片、GIF/WebP 动图及目录批量推理，覆盖合影及 Q 版/Logo 变体。
 
 模型基于 `vit_base_patch14_reg4_dinov2.lvd142m`（`timm`）进行两阶段微调，并在验证集上完成温度缩放（Temperature Scaling）与高精度阈值校准，针对三类困难负样本（蓝发二次元角色、真实/插画鱼类鲸类、文本/聊天表情包）进行了低误报优化。
