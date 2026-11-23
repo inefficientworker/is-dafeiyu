@@ -293,6 +293,19 @@
       color: var(--muted);
       font-size: 0.86rem;
     }
+    .dropzone-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .paste-hint {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: var(--accent);
+      min-height: 1.2em;
+    }
 
     .summary {
       display: flex;
@@ -445,8 +458,13 @@
     </section>
 
     <div id="dropzone" class="dropzone disabled">
-      <strong>3. 拖拽图片到这里、点击多选，或直接 Ctrl+V 粘贴剪贴板图片</strong>
+      <strong>3. 拖拽图片到这里、点击选择，或粘贴剪贴板图片（桌面端支持 Ctrl+V）</strong>
       <p>支持 PNG（含透明通道）、JPG、WebP、GIF · 纯浏览器本地 WASM 推理，图片不离开你的设备</p>
+      <div class="dropzone-actions">
+        <button id="selectImagesBtn" class="secondary" type="button">选择图片</button>
+        <button id="pasteClipboardBtn" type="button">粘贴剪贴板图片</button>
+      </div>
+      <div id="pasteHint" class="paste-hint" aria-live="polite"></div>
       <input id="imageInput" type="file" accept="image/*" multiple hidden />
     </div>
 
@@ -897,6 +915,45 @@
     });
 
     dropzone.addEventListener("click", () => imageInput.click());
+    const selectImagesBtn = document.getElementById("selectImagesBtn");
+    const pasteClipboardBtn = document.getElementById("pasteClipboardBtn");
+    const pasteHint = document.getElementById("pasteHint");
+
+    selectImagesBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      imageInput.click();
+    });
+
+    pasteClipboardBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      pasteHint.textContent = "";
+      if (!navigator.clipboard?.read) {
+        pasteHint.textContent = "当前浏览器不支持一键读取剪贴板，请使用「选择图片」或桌面端 Ctrl+V。";
+        return;
+      }
+      try {
+        const items = await navigator.clipboard.read();
+        const files = [];
+        for (const item of items) {
+          const imageType = item.types.find((t) => t.startsWith("image/"));
+          if (!imageType) continue;
+          const blob = await item.getType(imageType);
+          const ext = imageType.split("/")[1]?.split("+")[0] || "png";
+          files.push(new File([blob], `paste-${Date.now()}-${files.length}.${ext}`, { type: imageType }));
+        }
+        if (!files.length) {
+          pasteHint.textContent = "剪贴板中没有检测到图片。";
+          return;
+        }
+        handleFiles(files);
+      } catch (err) {
+        if (err?.name === "NotAllowedError") {
+          pasteHint.textContent = "未获得剪贴板读取权限，请在浏览器提示中允许粘贴。";
+        } else {
+          pasteHint.textContent = "读取剪贴板失败，请改用「选择图片」。";
+        }
+      }
+    });
     imageInput.addEventListener("change", (e) => {
       if (e.target.files?.length) handleFiles(e.target.files);
       e.target.value = "";

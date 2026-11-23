@@ -153,6 +153,19 @@
       color: var(--muted);
       font-size: 0.9rem;
     }
+    .dropzone-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .paste-hint {
+      margin-top: 10px;
+      font-size: 0.82rem;
+      color: var(--accent);
+      min-height: 1.2em;
+    }
     .summary {
       display: flex;
       justify-content: space-between;
@@ -282,8 +295,13 @@
     </section>
 
     <div id="dropzone" class="dropzone">
-      <strong>Drop images here or click to select multiple images</strong>
+      <strong>Drop images here, click to select, or paste from clipboard (Ctrl+V on desktop)</strong>
       <p>Supports PNG (transparent &amp; opaque), JPG, WebP, GIF · Resized to 224×224 RGBA in browser</p>
+      <div class="dropzone-actions">
+        <button id="selectImagesBtn" class="secondary" type="button">Select Images</button>
+        <button id="pasteClipboardBtn" type="button">Paste from Clipboard</button>
+      </div>
+      <div id="pasteHint" class="paste-hint" aria-live="polite"></div>
       <input id="imageInput" type="file" accept="image/*" multiple hidden />
     </div>
 
@@ -437,6 +455,58 @@
     });
 
     dropzone.addEventListener("click", () => imageInput.click());
+    const selectImagesBtn = document.getElementById("selectImagesBtn");
+    const pasteClipboardBtn = document.getElementById("pasteClipboardBtn");
+    const pasteHint = document.getElementById("pasteHint");
+
+    selectImagesBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      imageInput.click();
+    });
+
+    pasteClipboardBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      pasteHint.textContent = "";
+      if (!navigator.clipboard?.read) {
+        pasteHint.textContent = "Clipboard read API is not supported in this browser. Use Select Images or Ctrl+V.";
+        return;
+      }
+      try {
+        const items = await navigator.clipboard.read();
+        const files = [];
+        for (const item of items) {
+          const imageType = item.types.find((t) => t.startsWith("image/"));
+          if (!imageType) continue;
+          const blob = await item.getType(imageType);
+          const ext = imageType.split("/")[1]?.split("+")[0] || "png";
+          files.push(new File([blob], `paste-${Date.now()}-${files.length}.${ext}`, { type: imageType }));
+        }
+        if (!files.length) {
+          pasteHint.textContent = "No image found in clipboard.";
+          return;
+        }
+        handleFiles(files);
+      } catch (err) {
+        if (err?.name === "NotAllowedError") {
+          pasteHint.textContent = "Clipboard permission denied. Please allow paste in browser prompt.";
+        } else {
+          pasteHint.textContent = "Failed to read clipboard. Please use Select Images instead.";
+        }
+      }
+    });
+
+    document.addEventListener("paste", (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const files = [];
+      for (const item of items) {
+        if (item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+      if (files.length) handleFiles(files);
+    });
     imageInput.addEventListener("change", (e) => {
       if (e.target.files?.length) handleFiles(e.target.files);
       e.target.value = "";
