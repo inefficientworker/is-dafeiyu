@@ -1,5 +1,5 @@
 """Fetch three negative image categories:
-1. negative_fish: real fish, blue fish/whales (Wikimedia), and illustrated fish/whales (Safebooru.org)
+1. negative_fish: illustrated fish/whales (Safebooru.org)
 2. negative_blue_chars: blue-haired anime characters (Gura, Suisei, Miku, Furina, etc.) & blue chibis (Safebooru.org)
 3. negative_unrelated: diverse real-world photos (Picsum + Wikimedia), non-blue anime/chibis (Safebooru.org), and synthetic text memes
 """
@@ -15,6 +15,8 @@ from pathlib import Path
 
 import httpx
 from PIL import Image, ImageDraw, ImageFont
+
+from is_dafeiyu.data_policy import REAL_AQUATIC_SUBCATEGORIES
 
 OUT_ROOT = Path("data/processed")
 META_PATH = OUT_ROOT / "negatives_meta.jsonl"
@@ -155,10 +157,17 @@ def generate_synthetic_text_memes(out_dir: Path, count: int = 80) -> list[dict]:
         "哈哈哈哈哈",
     ]
     font_candidates = [
-        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "NotoSansCJK-Regular.ttc",
+        "DejaVuSans.ttf",
     ]
-    font_path = next((p for p in font_candidates if Path(p).exists()), None)
+    font_name = None
+    for candidate in font_candidates:
+        try:
+            ImageFont.truetype(candidate, 24)
+        except OSError:
+            continue
+        font_name = candidate
+        break
 
     records: list[dict] = []
     for i in range(count):
@@ -188,7 +197,7 @@ def generate_synthetic_text_memes(out_dir: Path, count: int = 80) -> list[dict]:
 
             text_color = (240, 240, 240) if sum(bg) < 300 else (30, 35, 45)
             try:
-                font = ImageFont.truetype(font_path, rng.randint(20, 36)) if font_path else ImageFont.load_default()
+                font = ImageFont.truetype(font_name, rng.randint(20, 36)) if font_name else ImageFont.load_default()
             except Exception:
                 font = ImageFont.load_default()
 
@@ -227,7 +236,7 @@ def collect_existing_wikimedia_records() -> list[dict]:
                     {
                         "path": str(img_path),
                         "label": 0,
-                        "category": cat,
+                        "category": "negative_unrelated" if sub_dir.name in REAL_AQUATIC_SUBCATEGORIES else cat,
                         "subcategory": sub_dir.name,
                         "group_id": img_path.stem,
                         "source": "wikimedia",

@@ -1,0 +1,40 @@
+seed: 42
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  splits_dir: data/splits
+  train_csv: data/splits/train.csv
+  val_csv: data/splits/val.csv
+  calibration_csv: data/splits/calibration.csv
+  test_csv: data/splits/test.csv
+  image_size: 224
+  num_workers: 4
+model:
+  backbone: mobilenetv3_large_100.ra4_e3600_r224_in1k
+  pretrained: true
+  drop_rate: 0.2
+  drop_path_rate: 0.1
+training:
+  device: auto
+  use_bf16: true
+  batch_size: 32
+  weight_decay: 0.03
+  label_smoothing: 0.02
+  stage1_epochs: 6
+  stage1_lr: 0.002
+  stage2_epochs: 25
+  stage2_lr: 0.0002
+  unfreeze_last_blocks: 4
+  pos_weight: 1.0
+  output_dir: artifacts/mobilenetv3_user_20261123
+  subcategory_loss_weights:
+    negative_gemini: 3.0
+    negative_glm: 3.0
+    negative_chatgpt: 3.0
+    negative_blue_ornate: 3.0
+    negative_other_ai_mascot: 3.0
+evaluation:
+  target_precision: 0.98
+  min_recall: 0.8
+  max_fpr: 0.01
+  max_subcategory_fpr: 0.05

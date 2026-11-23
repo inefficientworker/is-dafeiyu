@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -16,7 +15,9 @@ from PIL import Image, ImageOps
 from torch import nn
 
 from is_dafeiyu.dataset import build_transforms, load_rgb_image
+from is_dafeiyu.evaluate import operating_constraints, select_operating_point
 from is_dafeiyu.model import create_classifier
+from is_dafeiyu.provenance import check_model_calibration, file_sha256
 
 
 class CalibratedWrapper(nn.Module):
@@ -43,8 +44,12 @@ class BrowserCalibratedWrapper(nn.Module):
         super().__init__()
         self.backbone = backbone
         self.temperature = float(temperature)
-        self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1))
-        self.register_buffer("std", torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1))
+        self.register_buffer(
+            "mean", torch.tensor(mean, dtype=torch.float32).view(1, 3, 1, 1)
+        )
+        self.register_buffer(
+            "std", torch.tensor(std, dtype=torch.float32).view(1, 3, 1, 1)
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x_f = x.to(torch.float32)
@@ -71,7 +76,10 @@ def save_single_file_onnx(src_path: Path, dst_path: Path) -> None:
     model = onnx.load(str(src_path), load_external_data=True)
     dst_path.parent.mkdir(parents=True, exist_ok=True)
     onnx.save_model(model, str(dst_path), save_as_external_data=False)
-    for leftover in (dst_path.with_name(dst_path.name + ".data"), src_path.with_name(src_path.name + ".data")):
+    for leftover in (
+        dst_path.with_name(dst_path.name + ".data"),
+        src_path.with_name(src_path.name + ".data"),
+    ):
         if leftover.exists() and leftover != dst_path:
             leftover.unlink()
 
@@ -90,7 +98,9 @@ def export_fp32_onnx(
             "opset_version": 17,
         }
         try:
-            torch.onnx.export(wrapped, dummy, str(tmp_path), dynamo=False, **export_kwargs)
+            torch.onnx.export(
+                wrapped, dummy, str(tmp_path), dynamo=False, **export_kwargs
+            )
         except TypeError:
             torch.onnx.export(wrapped, dummy, str(tmp_path), **export_kwargs)
         save_single_file_onnx(tmp_path, out_path)
@@ -148,7 +158,8 @@ def apply_quantization(
             quantize_static,
         )
 
-        rows = list(csv.DictReader(Path(calib_csv).open("r", encoding="utf-8")))
+        with Path(calib_csv).open(encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
         rng = np.random.default_rng(42)
         if len(rows) > calib_samples:
             idxs = rng.choice(len(rows), size=calib_samples, replace=False)
@@ -204,72 +215,89 @@ def verify_onnx_parity(
     image_size: int,
     sample_paths: list[str],
     tol: float,
-) -> float:
-    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
-    max_diff = 0.0
-
-    # Dummy check
-    if input_format == "rgba_uint8":
-        dummy_np = np.random.default_rng(0).integers(0, 256, size=(2, image_size, image_size, 4), dtype=np.uint8)
-        dummy_t = torch.from_numpy(dummy_np)
-    else:
-        dummy_t = torch.randn(2, 3, image_size, image_size, dtype=torch.float32)
-        dummy_np = dummy_t.numpy()
-
-    with torch.no_grad():
-        pt_out = wrapped(dummy_t).numpy()
-    ort_out = sess.run(None, {"image": dummy_np})[0]
-    max_diff = max(max_diff, float(np.max(np.abs(pt_out - ort_out))))
-
-    # Real image checks (if available)
-    if input_format == "rgba_uint8" and sample_paths:
-        for p in sample_paths:
-            arr = image_to_rgba_uint8(p, image_size)
-            with torch.no_grad():
-                pt_p = float(wrapped(torch.from_numpy(arr)).item())
-            ort_p = float(sess.run(None, {"image": arr})[0][0])
-            diff = abs(pt_p - ort_p)
-            max_diff = max(max_diff, diff)
-            print(f"  [parity] {Path(p).name}: PyTorch={pt_p:.5f}, ONNX={ort_p:.5f}, diff={diff:.2e}")
-
-    print(f"[export] Max abs diff vs PyTorch: {max_diff:.2e} (tol={tol:.2e})")
-    if max_diff > tol:
-        raise AssertionError(f"ONNX parity check failed: max_diff={max_diff} > tol={tol}")
-    return max_diff
-
-
-def find_sample_images(csv_path: str | Path) -> list[str]:
-    p = Path(csv_path)
-    if not p.exists():
-        return []
-    rows = list(csv.DictReader(p.open("r", encoding="utf-8")))
-    picked: list[str] = []
-    # Try to pick 1 transparent PNG and 1 opaque/RGB image
-    for r in rows:
-        img_p = Path(r["path"])
-        if not img_p.exists():
-            continue
-        if img_p.suffix.lower() == ".png" and len(picked) == 0:
-            with Image.open(img_p) as im:
-                if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
-                    picked.append(str(img_p))
-        elif img_p.suffix.lower() in (".jpg", ".jpeg") and len(picked) == 1:
-            picked.append(str(img_p))
-        if len(picked) >= 2:
-            break
-    if not picked and rows:
-        for r in rows[:2]:
-            if Path(r["path"]).exists():
-                picked.append(r["path"])
-    return picked
+    mean: tuple[float, float, float] = (0.485, 0.456, 0.406),
+    std: tuple[float, float, float] = (0.229, 0.224, 0.225),
+    threshold: float = 0.5,
+) -> dict:
+    """Check every calibration image and real multi-image batches on the final artifact."""
+    if not sample_paths:
+        raise ValueError("Export validation requires a nonempty calibration split")
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = 4
+    sess = ort.InferenceSession(
+        str(onnx_path), options, providers=["CPUExecutionProvider"]
+    )
+    tf = build_transforms(image_size, mean, std, is_train=False)
+    inputs = [
+        image_to_rgba_uint8(p, image_size).copy()
+        if input_format == "rgba_uint8"
+        else tf(load_rgb_image(p)).unsqueeze(0).numpy()
+        for p in sample_paths
+    ]
+    results = []
+    with torch.inference_mode():
+        for p, arr in zip(sample_paths, inputs):
+            pt = float(wrapped(torch.from_numpy(arr)).item())
+            onnx_prob = float(sess.run(None, {"image": arr})[0].reshape(-1)[0])
+            results.append(
+                {"path": p, "pytorch_probability": pt, "onnx_probability": onnx_prob}
+            )
+        for start in range(0, len(inputs), 8):
+            batch = np.concatenate(inputs[start : start + 8])
+            pt = wrapped(torch.from_numpy(batch)).numpy().reshape(-1)
+            onnx_probs = sess.run(None, {"image": batch})[0].reshape(-1)
+            for row, p, q in zip(results[start : start + 8], pt, onnx_probs):
+                row["pytorch_batch_probability"] = float(p)
+                row["onnx_batch_probability"] = float(q)
+    values = np.array(
+        [
+            [
+                r[k]
+                for k in (
+                    "pytorch_probability",
+                    "onnx_probability",
+                    "pytorch_batch_probability",
+                    "onnx_batch_probability",
+                )
+            ]
+            for r in results
+        ]
+    )
+    finite = bool(np.isfinite(values).all())
+    max_diff = float(np.max(np.abs(values[:, 0] - values[:, 1]))) if finite else None
+    max_batch_diff = (
+        float(
+            max(
+                np.max(np.abs(values[:, 0] - values[:, 2])),
+                np.max(np.abs(values[:, 1] - values[:, 3])),
+            )
+        )
+        if finite
+        else None
+    )
+    valid_range = finite and bool(((values >= -1e-6) & (values <= 1 + 1e-6)).all())
+    return {
+        "passed": bool(valid_range and max_diff <= tol and max_batch_diff <= tol),
+        "tolerance": tol,
+        "max_abs_probability_difference": max_diff,
+        "max_batch_probability_difference": max_batch_diff,
+        "decision_differences_at_pytorch_threshold": int(
+            ((values[:, 0] >= threshold) != (values[:, 1] >= threshold)).sum()
+        ),
+        "samples": results,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", type=str, default="artifacts/dinov2_base/best.pt")
+    parser.add_argument(
+        "--checkpoint", type=str, default="artifacts/dinov2_base_v2/best.pt"
+    )
     parser.add_argument("--calibration", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--browser", action="store_true", help="Shorthand for --input-format rgba_uint8")
+    parser.add_argument(
+        "--browser", action="store_true", help="Shorthand for --input-format rgba_uint8"
+    )
     parser.add_argument(
         "--input-format",
         type=str,
@@ -282,13 +310,19 @@ def main() -> None:
         choices=["none", "fp16", "int8_dynamic", "int8_static"],
         default="none",
     )
-    parser.add_argument("--calib-csv", type=str, default="data/splits/val.csv")
+    parser.add_argument("--calib-csv", type=str, default="data/splits/calibration.csv")
     parser.add_argument("--calib-samples", type=int, default=200)
     args = parser.parse_args()
 
     ckpt_path = Path(args.checkpoint)
-    calib_path = Path(args.calibration) if args.calibration else ckpt_path.parent / "calibration.json"
-    input_format = args.input_format or ("rgba_uint8" if args.browser else "nchw_float32")
+    calib_path = (
+        Path(args.calibration)
+        if args.calibration
+        else ckpt_path.parent / "calibration.json"
+    )
+    input_format = args.input_format or (
+        "rgba_uint8" if args.browser else "nchw_float32"
+    )
     if args.output:
         out_path = Path(args.output)
     else:
@@ -300,13 +334,29 @@ def main() -> None:
         out_path = ckpt_path.parent / f"model{suffix}.onnx"
 
     ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-    model, _ = create_classifier(backbone=ckpt["backbone"], pretrained=False, img_size=ckpt["image_size"])
+    model, _ = create_classifier(
+        backbone=ckpt["backbone"], pretrained=False, img_size=ckpt["image_size"]
+    )
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
 
-    temp = 1.0
-    if calib_path.exists():
-        temp = float(json.loads(calib_path.read_text(encoding="utf-8")).get("temperature", 1.0))
+    calib = json.loads(calib_path.read_text(encoding="utf-8"))
+    check_model_calibration(calib, ckpt_path)
+    expected_csv = (
+        calib.get("data_provenance", {}).get("calibration", {}).get("csv_sha256")
+    )
+    if "checkpoint_sha256" not in calib or expected_csv != file_sha256(args.calib_csv):
+        raise ValueError(
+            "Export requires checkpoint-bound calibration from the independent calibration split"
+        )
+    with Path(args.calib_csv).open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    for row in rows:
+        if row.get("sha256") != file_sha256(row["path"]):
+            raise ValueError(
+                f"Calibration image changed since split creation: {row['path']}"
+            )
+    temp = float(calib["temperature"])
 
     image_size = int(ckpt["image_size"])
     mean = tuple(float(v) for v in ckpt["mean"])
@@ -320,36 +370,94 @@ def main() -> None:
         dummy = torch.randn(1, 3, image_size, image_size, dtype=torch.float32)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = out_path.with_name(out_path.stem + ".__candidate__.onnx")
     if args.quantize == "none":
-        export_fp32_onnx(wrapped, dummy, out_path)
+        export_fp32_onnx(wrapped, dummy, candidate)
     else:
-        fp32_tmp = out_path.with_name(out_path.stem + ".__fp32__.onnx")
+        fp32_tmp = candidate.with_name(candidate.stem + ".__fp32__.onnx")
         try:
             export_fp32_onnx(wrapped, dummy, fp32_tmp)
             apply_quantization(
-                fp32_path=fp32_tmp,
-                out_path=out_path,
-                mode=args.quantize,
-                input_format=input_format,
-                image_size=image_size,
-                mean=mean,
-                std=std,
-                calib_csv=args.calib_csv,
-                calib_samples=args.calib_samples,
+                fp32_tmp,
+                candidate,
+                args.quantize,
+                input_format,
+                image_size,
+                mean,
+                std,
+                args.calib_csv,
+                args.calib_samples,
             )
         finally:
             fp32_tmp.unlink(missing_ok=True)
 
-    size_mb = out_path.stat().st_size / (1024 * 1024)
-    has_ext_data = out_path.with_name(out_path.name + ".data").exists()
-    print(f"[export] Saved single-file ONNX ({input_format}, quant={args.quantize}): {out_path} ({size_mb:.2f} MB, external_data={has_ext_data})")
-    assert not has_ext_data, "External .data file must not exist!"
-
-    tol = 1e-3 if args.quantize == "none" else (5e-2 if args.quantize == "fp16" else 0.15)
-    sample_paths = find_sample_images(args.calib_csv)
-    t0 = time.perf_counter()
-    verify_onnx_parity(wrapped, out_path, input_format, image_size, sample_paths, tol=tol)
-    _ = time.perf_counter() - t0
+    tol = (
+        1e-3 if args.quantize == "none" else (5e-2 if args.quantize == "fp16" else 0.15)
+    )
+    report = verify_onnx_parity(
+        wrapped,
+        candidate,
+        input_format,
+        image_size,
+        [r["path"] for r in rows],
+        tol,
+        mean,
+        std,
+        float(calib["threshold"]),
+    )
+    report["accepted"] = False
+    report["candidate_sha256"] = file_sha256(candidate)
+    report_path = out_path.with_suffix(".validation.json")
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if not report["passed"]:
+        raise ValueError(
+            f"Export parity failed; existing model preserved. See {report_path}"
+        )
+    scores = np.clip([r["onnx_probability"] for r in report["samples"]], 0, 1)
+    selection = select_operating_point(
+        scores,
+        np.array([int(r["label"]) for r in rows]),
+        [r["subcategory"] for r in rows],
+        **operating_constraints(calib["constraints"]),
+    )
+    report["deployment_selection"] = selection
+    if selection["accepted"]:
+        threshold = selection["operating_point"]["threshold"]
+        report["batch_decision_differences"] = sum(
+            (r["onnx_probability"] >= threshold)
+            != (r["onnx_batch_probability"] >= threshold)
+            for r in report["samples"]
+        )
+        report["accepted"] = report["batch_decision_differences"] == 0
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    if not report["accepted"]:
+        raise ValueError(
+            f"Deployed model did not meet calibration/batch-stability constraints. See {report_path}"
+        )
+    deployment = {
+        "accepted": True,
+        "threshold": threshold,
+        "baked_temperature": temp,
+        "threshold_backend": "onnx_final_artifact",
+        "input_format": input_format,
+        "image_size": image_size,
+        "mean": mean,
+        "std": std,
+        "onnx_sha256": report["candidate_sha256"],
+        "checkpoint_sha256": file_sha256(ckpt_path),
+        "data_provenance": calib["data_provenance"],
+        **selection,
+    }
+    sidecar = out_path.with_suffix(".calibration.json")
+    sidecar.with_suffix(".json.tmp").write_text(
+        json.dumps(deployment, indent=2), encoding="utf-8"
+    )
+    candidate.replace(out_path)
+    sidecar.with_suffix(".json.tmp").replace(sidecar)
+    print(
+        f"[export] Accepted {out_path} ({out_path.stat().st_size / (1024 * 1024):.2f} MB); threshold={threshold:.8f}"
+    )
+    print(f"[export] Calibration: {sidecar}; full parity report: {report_path}")
 
 
 if __name__ == "__main__":

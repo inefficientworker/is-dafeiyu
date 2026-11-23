@@ -6,6 +6,7 @@ data:
   splits_dir: data/splits
   train_csv: data/splits/train.csv
   val_csv: data/splits/val.csv
+  calibration_csv: data/splits/calibration.csv
   test_csv: data/splits/test.csv
   image_size: 224
   num_workers: 4
@@ -27,9 +28,11 @@ training:
   stage2_epochs: 15
   stage2_lr: 3.0e-5
   unfreeze_last_blocks: 3
-  pos_weight_scale: 1.0
-  output_dir: artifacts/dinov2_base
+  pos_weight: 1.0
+  output_dir: artifacts/dinov2_base_v2
 
 evaluation:
   target_precision: 0.98
-  f_beta: 0.5
+  min_recall: 0.80
+  max_fpr: 0.01
+  max_subcategory_fpr: 0.05

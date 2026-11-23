@@ -25,7 +25,9 @@ TRAIN_BG_COLORS = (
 class RandomJPEGCompression:
     """Simulate chat app JPEG/WebP recompression artifacts."""
 
-    def __init__(self, p: float = 0.3, quality_range: tuple[int, int] = (50, 95)) -> None:
+    def __init__(
+        self, p: float = 0.3, quality_range: tuple[int, int] = (50, 95)
+    ) -> None:
         self.p = p
         self.quality_range = quality_range
 
@@ -44,7 +46,9 @@ def load_rgb_image(path: str | Path, random_bg: bool = False) -> Image.Image:
     """Load an image and composite transparency onto either white or a random solid background."""
     with Image.open(path) as img:
         img = ImageOps.exif_transpose(img)
-        if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        if img.mode in ("RGBA", "LA") or (
+            img.mode == "P" and "transparency" in img.info
+        ):
             rgba = img.convert("RGBA")
             bg_color = random.choice(TRAIN_BG_COLORS) if random_bg else (255, 255, 255)
             bg = Image.new("RGB", rgba.size, bg_color)
@@ -62,23 +66,24 @@ def build_transforms(
     if is_train:
         return transforms.Compose(
             [
-                transforms.RandomResizedCrop(
-                    image_size,
-                    scale=(0.75, 1.0),
-                    ratio=(0.85, 1.15),
-                    interpolation=InterpolationMode.BICUBIC,
+                # Labels mean "present anywhere"; preserve the entire image.
+                transforms.Resize(
+                    (image_size, image_size), interpolation=InterpolationMode.BICUBIC
                 ),
                 transforms.RandomHorizontalFlip(p=0.5),
-                transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.15, hue=0.015),
+                transforms.ColorJitter(
+                    brightness=0.15, contrast=0.15, saturation=0.15, hue=0.015
+                ),
                 RandomJPEGCompression(p=0.3, quality_range=(55, 95)),
                 transforms.ToTensor(),
                 transforms.Normalize(mean=mean, std=std),
-                transforms.RandomErasing(p=0.2, scale=(0.02, 0.14)),
             ]
         )
     return transforms.Compose(
         [
-            transforms.Resize((image_size, image_size), interpolation=InterpolationMode.BICUBIC),
+            transforms.Resize(
+                (image_size, image_size), interpolation=InterpolationMode.BICUBIC
+            ),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std),
         ]
@@ -115,6 +120,7 @@ class DafeiyuDataset(Dataset):
             "category": row["category"],
             "subcategory": row["subcategory"],
             "path": row["path"],
+            "cluster_id": row.get("cluster_id") or row.get("group_id") or row["path"],
         }
         if self.teacher_logits is not None:
             item["teacher_logit"] = float(self.teacher_logits[row["path"]])

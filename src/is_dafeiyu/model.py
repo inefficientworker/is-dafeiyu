@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import timm
 import torch
 from torch import nn
@@ -61,7 +63,11 @@ def _get_head_params(model: nn.Module) -> list[nn.Parameter]:
     if isinstance(head, nn.Module):
         return list(head.parameters())
     # Fallback by parameter name
-    return [p for n, p in model.named_parameters() if any(k in n for k in ("head", "fc", "classifier"))]
+    return [
+        p
+        for n, p in model.named_parameters()
+        if any(k in n for k in ("head", "fc", "classifier"))
+    ]
 
 
 def freeze_backbone(model: nn.Module) -> None:
@@ -72,7 +78,46 @@ def freeze_backbone(model: nn.Module) -> None:
         p.requires_grad = True
 
 
-def unfreeze_last_blocks(model: nn.Module, n_blocks: int = 3) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
+def set_training_mode(model: nn.Module) -> None:
+    """Train unfrozen subtrees while keeping frozen features and buffers deterministic."""
+    model.eval()
+
+    def enable(module: nn.Module) -> None:
+        parameters = list(module.parameters())
+        if parameters and all(p.requires_grad for p in parameters):
+            module.train()
+        else:
+            for child in module.children():
+                enable(child)
+
+    enable(model)
+
+
+def frozen_state_digest(model: nn.Module) -> str:
+    """Fingerprint frozen parameters and buffers for stage-level training audits."""
+    state = {name: p for name, p in model.named_parameters() if not p.requires_grad}
+    for name, buffer in model.named_buffers():
+        parent = model.get_submodule(name.rpartition(".")[0])
+        if not any(p.requires_grad for p in parent.parameters()):
+            state[name] = buffer
+    digest = hashlib.sha256()
+    for name, tensor in sorted(state.items()):
+        digest.update(name.encode())
+        digest.update(
+            tensor.detach()
+            .cpu()
+            .contiguous()
+            .reshape(-1)
+            .view(torch.uint8)
+            .numpy()
+            .tobytes()
+        )
+    return digest.hexdigest()
+
+
+def unfreeze_last_blocks(
+    model: nn.Module, n_blocks: int = 3
+) -> tuple[list[nn.Parameter], list[nn.Parameter]]:
     """Unfreeze the classification head, final norm/conv_head, and last n_blocks/stages of the backbone.
 
     If n_blocks <= 0, all backbone parameters are unfrozen.
@@ -86,7 +131,14 @@ def unfreeze_last_blocks(model: nn.Module, n_blocks: int = 3) -> tuple[list[nn.P
         freeze_backbone(model)
 
         # Unfreeze final norm / head-projection layers (ViT norm, MobileNet conv_head/norm_head, ConvNeXt head.norm)
-        for tail_attr in ("norm", "fc_norm", "norm_pre", "conv_head", "norm_head", "head"):
+        for tail_attr in (
+            "norm",
+            "fc_norm",
+            "norm_pre",
+            "conv_head",
+            "norm_head",
+            "head",
+        ):
             tail_mod = getattr(model, tail_attr, None)
             if isinstance(tail_mod, nn.Module):
                 for p in tail_mod.parameters():
@@ -107,6 +159,10 @@ def unfreeze_last_blocks(model: nn.Module, n_blocks: int = 3) -> tuple[list[nn.P
             for p in model.parameters():
                 p.requires_grad = True
 
-    backbone_params = [p for p in model.parameters() if p.requires_grad and id(p) not in head_ids]
-    head_params = [p for p in model.parameters() if p.requires_grad and id(p) in head_ids]
+    backbone_params = [
+        p for p in model.parameters() if p.requires_grad and id(p) not in head_ids
+    ]
+    head_params = [
+        p for p in model.parameters() if p.requires_grad and id(p) in head_ids
+    ]
     return backbone_params, head_params

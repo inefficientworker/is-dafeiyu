@@ -24,6 +24,7 @@ from sklearn.metrics import (
 from is_dafeiyu.dataset import build_transforms, load_rgb_image
 from is_dafeiyu.evaluate import summarize_groups
 from is_dafeiyu.export import image_to_rgba_uint8
+from is_dafeiyu.provenance import check_model_calibration, file_sha256
 
 
 def evaluate_onnx(
@@ -38,7 +39,9 @@ def evaluate_onnx(
 ) -> dict:
     so = ort.SessionOptions()
     so.intra_op_num_threads = 4
-    sess = ort.InferenceSession(str(onnx_path), sess_options=so, providers=["CPUExecutionProvider"])
+    sess = ort.InferenceSession(
+        str(onnx_path), sess_options=so, providers=["CPUExecutionProvider"]
+    )
     input_name = sess.get_inputs()[0].name
 
     rows = list(csv.DictReader(test_csv.open("r", encoding="utf-8")))
@@ -69,12 +72,16 @@ def evaluate_onnx(
         probs.append(float(np.asarray(out).reshape(-1)[0]))
 
     probs_np = np.array(probs, dtype=np.float64)
+    if not np.isfinite(probs_np).all():
+        raise FloatingPointError("Non-finite ONNX predictions")
     labels_np = np.array(labels, dtype=int)
     preds_np = (probs_np >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(labels_np, preds_np, labels=[0, 1]).ravel()
 
     return {
         "onnx_path": str(onnx_path),
+        "onnx_sha256": file_sha256(onnx_path),
+        "test_csv_sha256": file_sha256(test_csv),
         "size_mb": round(onnx_path.stat().st_size / (1024 * 1024), 3),
         "threshold": float(threshold),
         "latency_mean_ms": round(float(np.mean(latencies_ms)), 3),
@@ -87,9 +94,27 @@ def evaluate_onnx(
         "f0.5": float(fbeta_score(labels_np, preds_np, beta=0.5, zero_division=0)),
         "pr_auc": float(average_precision_score(labels_np, probs_np)),
         "roc_auc": float(roc_auc_score(labels_np, probs_np)),
-        "confusion_matrix": {"tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp)},
-        "by_category": summarize_groups(labels_np, preds_np, [r["category"] for r in rows]),
-        "by_subcategory": summarize_groups(labels_np, preds_np, [r.get("subcategory") or r["category"] for r in rows]),
+        "confusion_matrix": {
+            "tn": int(tn),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tp": int(tp),
+        },
+        "by_category": summarize_groups(
+            labels_np, preds_np, [r["category"] for r in rows]
+        ),
+        "by_subcategory": summarize_groups(
+            labels_np, preds_np, [r.get("subcategory") or r["category"] for r in rows]
+        ),
+        "samples": [
+            {
+                "path": r["path"],
+                "label": int(r["label"]),
+                "probability": p,
+                "predicted": int(pred),
+            }
+            for r, p, pred in zip(rows, probs, preds_np)
+        ],
     }
 
 
@@ -99,22 +124,55 @@ def main() -> None:
     parser.add_argument("--calibration", type=str, default=None)
     parser.add_argument("--threshold", type=float, default=None)
     parser.add_argument("--test-csv", type=str, default="data/splits/test.csv")
-    parser.add_argument("--input-format", type=str, choices=["rgba_uint8", "nchw_float32"], default="rgba_uint8")
+    parser.add_argument(
+        "--input-format",
+        type=str,
+        choices=["rgba_uint8", "nchw_float32"],
+        default="rgba_uint8",
+    )
     parser.add_argument("--out-json", type=str, default=None)
     args = parser.parse_args()
 
     onnx_path = Path(args.onnx)
-    calib_path = Path(args.calibration) if args.calibration else onnx_path.parent / "calibration.json"
+    calib_path = (
+        Path(args.calibration)
+        if args.calibration
+        else onnx_path.with_suffix(".calibration.json")
+    )
     thr = 0.5
+    calib = {}
     if calib_path.exists():
-        thr = float(json.loads(calib_path.read_text(encoding="utf-8")).get("threshold", 0.5))
+        calib = json.loads(calib_path.read_text(encoding="utf-8"))
+        check_model_calibration(calib, onnx_path, "onnx_sha256")
+        if "onnx_sha256" not in calib and args.threshold is None:
+            raise ValueError(
+                "Use the calibration sidecar for the final ONNX file, or an explicit diagnostic --threshold"
+            )
+        thr = float(calib["threshold"])
+    elif args.threshold is None:
+        raise ValueError(
+            f"Missing deployment calibration {calib_path}; export/calibrate the model first"
+        )
     if args.threshold is not None:
         thr = args.threshold
 
-    res = evaluate_onnx(onnx_path, Path(args.test_csv), thr, input_format=args.input_format)
+    res = evaluate_onnx(
+        onnx_path,
+        Path(args.test_csv),
+        thr,
+        input_format=calib.get("input_format", args.input_format),
+        image_size=calib.get("image_size", 224),
+        mean=tuple(calib.get("mean", (0.485, 0.456, 0.406))),
+        std=tuple(calib.get("std", (0.229, 0.224, 0.225))),
+    )
+    res["recorded_test_manifest"] = res["test_csv_sha256"] == calib.get(
+        "data_provenance", {}
+    ).get("test", {}).get("csv_sha256")
     print(json.dumps(res, indent=2, ensure_ascii=False))
     if args.out_json:
-        Path(args.out_json).write_text(json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8")
+        Path(args.out_json).write_text(
+            json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
 
 if __name__ == "__main__":
