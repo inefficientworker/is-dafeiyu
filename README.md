@@ -14,54 +14,54 @@ tags:
 
 # is-dafeiyu
 
-Binary image classifier that detects **Dafeiyu (大肥鱼 / DeepSeek whale-girl mascot)** in static images, animated GIF/WebP files, and directories — including group shots and chibi/logo variants.
+用于检测图片中是否包含 **大肥鱼（鲸鱼娘 / DeepSeek 吉祥物）** 的二分类图像识别模型，支持静态图片、GIF/WebP 动图及目录批量推理，覆盖合影及 Q 版/Logo 变体。
 
-Built on `vit_base_patch14_reg4_dinov2.lvd142m` (`timm`) with two-stage fine-tuning and temperature-scaled calibration optimized for **high precision** against hard negatives (blue-haired anime characters, fish/whales, and text/chat memes).
+模型基于 `vit_base_patch14_reg4_dinov2.lvd142m`（`timm`）进行两阶段微调，并在验证集上完成温度缩放（Temperature Scaling）与高精度阈值校准，针对三类困难负样本（蓝发二次元角色、真实/插画鱼类鲸类、文本/聊天表情包）进行了低误报优化。
 
-## Model Artifacts (`artifacts/dinov2_base/`)
+## 模型产物（`artifacts/dinov2_base/`）
 
-| File | Description |
+| 文件 | 说明 |
 | :--- | :--- |
-| `best.pt` | PyTorch checkpoint (best validation F0.5 / precision-calibrated) |
-| `model.onnx` + `model.onnx.data` | Exported ONNX model with baked-in temperature-scaled sigmoid |
-| `calibration.json` | Temperature (`0.2470`) and calibrated threshold (`0.5`) |
-| `test_report.json` | Held-out test split evaluation metrics |
-| `history.json` | Stage 1 & Stage 2 training metrics |
+| `best.pt` | PyTorch 训练检查点（验证集 F0.5 / 高精度校准最优模型） |
+| `model.onnx` + `model.onnx.data` | 导出的 ONNX 模型（已内置温度缩放 Sigmoid） |
+| `calibration.json` | 校准温度（`0.2470`）与分类阈值（`0.5`） |
+| `test_report.json` | 测试集评估报告 |
+| `history.json` | 第一、二阶段训练指标记录 |
 
-## Evaluation Results (Held-out Test Split, `n = 251`)
+## 测试集评估结果（`n = 251`）
 
-| Metric | Value |
+| 指标 | 数值 |
 | :--- | :--- |
 | **Accuracy** | `0.9960` |
-| **Precision** | `1.0000` (`0` false positives across 214 negatives) |
-| **Recall** | `0.9730` (`36 / 37` positives) |
+| **Precision** | `1.0000`（214 张负样本 `0` 误报） |
+| **Recall** | `0.9730`（37 张正样本检出 `36` 张） |
 | **F1** | `0.9863` |
 | **F0.5** | `0.9945` |
 | **PR-AUC / ROC-AUC** | `1.0000` / `1.0000` |
 
-Per-category test breakdown:
-- `negative_blue_chars` (`n = 84`): `0` false positives (`FPR = 0.0`)
-- `negative_fish` (`n = 46`): `0` false positives (`FPR = 0.0`)
-- `negative_unrelated` (`n = 84`): `0` false positives (`FPR = 0.0`)
-- `positive_dafeiyu` (`n = 37`): `36 / 37` detected (`Recall = 0.9730`)
+各类别测试集明细：
+- `negative_blue_chars`（`n = 84`）：`0` 误报（`FPR = 0.0`）
+- `negative_fish`（`n = 46`）：`0` 误报（`FPR = 0.0`）
+- `negative_unrelated`（`n = 84`）：`0` 误报（`FPR = 0.0`）
+- `positive_dafeiyu`（`n = 37`）：检出 `36 / 37`（`Recall = 0.9730`）
 
-## Quick Start
+## 快速开始
 
 ```bash
-# Install dependencies (Python 3.12 via uv)
+# 使用 uv 安装依赖（Python 3.12）
 uv sync --python 3.12
 
-# Run CLI inference on a single image, GIF/WebP, or directory
+# 对单张图片、GIF/WebP 动图或目录进行推理
 uv run python -m is_dafeiyu.predict /path/to/image_or_dir
 uv run python -m is_dafeiyu.predict /path/to/image.png --threshold 0.75 --json
 ```
 
-## Dataset & Copyright Notice
+## 数据集与版权声明
 
-The curated dataset (`data/processed/` and `data/splits/`) contains 2,506 leak-free split samples (`2,004` train / `251` val / `251` test) stored in LFS.
+仓库中的清洗数据集（`data/processed/` 与 `data/splits/`）共包含 2,506 条无泄漏划分样本（`train` 2,004 / `val` 251 / `test` 251），已通过 LFS 存储。
 
-All dataset images are included **for non-commercial research and educational use only**, with full source attribution and license details documented in [DATASET_NOTICE.md](./DATASET_NOTICE.md):
-- **Positive & AI Mascot images**: From [EDMOK/blue-fish-archive](https://github.com/EDMOK/blue-fish-archive) ([fisharchive.cc](https://fisharchive.cc/)). Original whale-girl design by **上善无形**; DeepSeek maid whale-girl derivative design by **ZipZipPipe** under **CC BY-NC-SA 4.0**.
-- **Anime hard negatives & illustrations**: From [Safebooru.org](https://safebooru.org/), rights belonging to respective artists and IP holders.
-- **Real-world fish/whales & general images**: From [Wikimedia Commons](https://commons.wikimedia.org/) (respective CC / Public Domain licenses) and [Lorem Picsum](https://picsum.photos/) (Unsplash License).
-- **Synthetic text memes**: Locally generated (`scripts/fetch_negatives.py`), CC0 / MIT.
+数据集中的所有图片**仅限非商业研究、学习与分类器评估使用**，完整来源与版权声明见 [DATASET_NOTICE.md](./DATASET_NOTICE.md)：
+- **正样本与 AI 拟人角色负样本**：来自 [EDMOK/blue-fish-archive](https://github.com/EDMOK/blue-fish-archive)（[fisharchive.cc](https://fisharchive.cc/)）。鲸鱼娘原设作者为 **上善无形**，DeepSeek 女仆鲸鱼娘二设作者为 **ZipZipPipe**，依 **CC BY-NC-SA 4.0** 协议授权。
+- **二次元困难负样本与插画**：来自 [Safebooru.org](https://safebooru.org/)，版权归各自画师与原 IP 权利方所有。
+- **真实鱼类/鲸类与自然照片**：来自 [Wikimedia Commons](https://commons.wikimedia.org/)（各自 CC / 公共领域协议）及 [Lorem Picsum](https://picsum.photos/)（Unsplash License）。
+- **合成文本表情包**：由 `scripts/fetch_negatives.py` 本地生成（CC0 / MIT）。
